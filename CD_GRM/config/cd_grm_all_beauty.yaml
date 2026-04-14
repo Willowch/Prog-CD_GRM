@@ -1,0 +1,50 @@
+dataset: All_Beauty                 # 数据集名称；RecBole 会到 data_path 下寻找对应目录，例如 CD_GRM/dataset/All_Beauty/
+data_path: CD_GRM/data/             # 数据集根目录；实际读取时通常会拼成 CD_GRM/dataset/All_Beauty/
+device: cuda                        # 指定训练设备为 GPU；如果当前环境有可用 CUDA，则模型和张量会放到显卡上
+seed: 42                            # 随机种子，用于尽量保证实验可复现，例如数据划分、参数初始化、采样等过程
+
+USER_ID_FIELD: user_id              # 指定“用户 ID 字段”的字段名；要与 .inter 文件表头中的 user_id 对应
+ITEM_ID_FIELD: item_id              # 指定“物品 ID 字段”的字段名；要与 .inter 文件表头中的 item_id 对应
+TIME_FIELD: timestamp               # 指定“时间戳字段”的字段名；序列推荐按时间排序时会用到它
+
+load_col:                           # 指定从哪些文件中加载哪些列
+  inter: [user_id, item_id, timestamp]   # 从 .inter 交互文件中只读取这三列；这里没有加载 rating，说明训练时不使用评分字段
+
+filter_inter_by_user_or_item: true  # 是否启用基于用户/物品交互次数的过滤；true 表示会按下面两个区间过滤冷用户和冷物品
+user_inter_num_interval: "[5,inf)"  # 用户交互次数过滤区间；只保留交互次数 >= 5 的用户
+item_inter_num_interval: "[5,inf)"  # 物品交互次数过滤区间；只保留交互次数 >= 5 的物品
+
+ITEM_LIST_LENGTH_FIELD: item_length # 序列长度字段名；RecBole 在构造历史序列时会生成该字段，表示每个样本历史序列的真实长度
+LIST_SUFFIX: _list                  # 序列字段后缀；例如 item_id 会扩展生成 item_id_list，表示历史物品序列
+MAX_ITEM_LIST_LENGTH: 50            # 历史序列最大长度；超过 50 的历史会被截断，通常保留最近的 50 个交互
+
+train_neg_sample_args: null         # 训练阶段不使用负采样；对生成式推荐来说通常不需要像传统排序模型那样显式负采样
+
+eval_args:                          # 评估相关配置
+  split:                            # 数据集划分方式配置
+    LS: valid_and_test              # Leave-One-Out 风格划分；通常表示按时间顺序把最后若干交互切给验证集和测试集
+  order: TO                         # TO = Time Order，按时间顺序构造序列与划分数据
+  mode: full                        # full 表示全排序评估；测试时在全物品集合上进行排序，而不是只在采样候选上评估
+
+model_config:                       # 你的自定义模型配置；通常会在构建 CD-GRM 时读取
+  embed_dim: 128                    # 嵌入维度 d；user/item 或语义表示通常映射到 128 维向量空间
+  m_layers: 4                       # 语义 ID / 残差量化层数 M；表示一个 item 会被编码成 4 层离散 code
+  codebook_size: 256                # 每层 codebook 的大小 K；每层可选 256 个离散码字
+  diffusion_steps: 10               # 扩散/去噪步数 T；生成语义 ID 时的总去噪步数
+  transformer_layers: 2             # Transformer 编码器/去噪网络层数；这里是 2 层
+  nhead: 4                          # 多头注意力头数；每层 Transformer 使用 4 个注意力头
+  tau: 0.1                          # 对比学习 InfoNCE 温度系数；越小通常分布越尖锐
+  max_degree: 50                    # 图视图构建时的最大邻居数/最大出度；限制图过大或节点邻接过多
+  dead_code_warmup_steps: 100       # 死码本检测的预热步数；训练前 100 步内先不急着处理低使用率 code
+  dead_code_patience: 100           # 死码本容忍步数；连续低使用若达到该阈值，再触发处理逻辑
+  dead_code_min_usage_ratio: 0.1    # 死码本最低使用率阈值；若某 code 使用率低于 0.1（或实现中按比例解释）可能被判定为低活跃
+
+train_batch_size: 256               # 训练 batch 大小；每次参数更新使用 256 个训练样本
+eval_batch_size: 64                 # 验证/测试 batch 大小；评估时通常更占显存，所以这里设为 64
+learning_rate: 0.001                # 学习率；优化器每步更新参数的步长
+weight_decay: 0.0001                # 权重衰减系数；相当于 L2 正则，用于抑制过拟合
+epochs: 50                          # 总训练轮数；完整遍历训练集 50 次
+topk: [5, 10, 20]                   # 评估的 Top-K 截断位置；通常会计算 HR@5/NDCG@5、HR@10/NDCG@10、HR@20/NDCG@20
+
+stage1_epochs: 15                   # 第一阶段训练轮数；例如先训练 RQ-VAE / item embedding 等模块共 15 个 epoch
+freeze_rqvae_stage2: true           # 第二阶段是否冻结 RQ-VAE；true 表示进入 stage2 后不再更新量化器参数
