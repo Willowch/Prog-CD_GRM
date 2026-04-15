@@ -130,7 +130,8 @@ def resolve_data_path(raw_config: dict) -> Path:
     data_path = data_map[key]
     if not data_path.exists():
         raise FileNotFoundError(f"data file not found: {data_path}")
-    raw_config["data_path"] = str(data_path)
+    data_root = data_path.parent.parent.resolve()
+    raw_config["data_path"] = str(data_root)
     return data_path.resolve()  # 返回配置文件的绝对规范路径
 #解析device；写回config并返回
 def resolve_device(raw_config: dict, device_override: str | None) -> torch.device:
