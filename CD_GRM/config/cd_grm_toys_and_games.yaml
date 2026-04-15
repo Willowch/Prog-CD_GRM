@@ -1,0 +1,50 @@
+dataset: Toys_and_Games
+data_path: CD_GRM/data/
+device: cuda
+seed: 42
+
+USER_ID_FIELD: user_id
+ITEM_ID_FIELD: item_id
+TIME_FIELD: timestamp
+
+load_col:
+  inter: [user_id, item_id, timestamp]
+
+filter_inter_by_user_or_item: true
+user_inter_num_interval: "[5,inf)"
+item_inter_num_interval: "[5,inf)"
+
+ITEM_LIST_LENGTH_FIELD: item_length
+LIST_SUFFIX: _list
+MAX_ITEM_LIST_LENGTH: 50
+
+train_neg_sample_args: null
+
+eval_args:
+  split:
+    LS: valid_and_test
+  order: TO
+  mode: full
+
+model_config:
+  embed_dim: 128
+  m_layers: 4
+  codebook_size: 256
+  diffusion_steps: 10
+  transformer_layers: 2
+  nhead: 4
+  tau: 0.1
+  max_degree: 50
+  dead_code_warmup_steps: 100
+  dead_code_patience: 100
+  dead_code_min_usage_ratio: 0.1
+
+train_batch_size: 256
+eval_batch_size: 64
+learning_rate: 0.001
+weight_decay: 0.0001
+epochs: 50
+topk: [5, 10, 20]
+
+stage1_epochs: 15
+freeze_rqvae_stage2: true
