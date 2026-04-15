@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.cuda.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import optuna
@@ -34,8 +33,6 @@ class AMPTrainer:
         self.freeze_rqvae_stage2 = freeze_rqvae_stage2#Stage2是否冻结 quantizer / RQ-VAE
         self.trial = trial# Optuna 的 trial 对象；若不是调参模式则为 None
         self.is_cuda = (self.device.type == "cuda")
-        self.scaler = GradScaler(enabled=self.is_cuda)# 创建梯度缩放器；当使用 CUDA 时启用混合精度
-        # 但你后面 train_epoch 中已经不用 scaler 做 backward/step 了，这里实际上只是保留对象
         self.writer = SummaryWriter(log_dir=log_dir)# 创建 TensorBoard 日志记录器
         self.checkpoint_dir = checkpoint_dir# 保存 checkpoint 的目录路径
 
@@ -266,8 +263,11 @@ class AMPTrainer:
                         if act_rate < 0.05 or coll_rate > 0.95:
                             log_str += " ⚠️[阶段1：出现码本崩塌]"
                             print(log_str)
-                            if self.trial is not None:#报告剪枝
+                            if self.trial is not None:
                                 raise optuna.exceptions.TrialPruned()
+                            else:
+                                print("遇到码本崩塌，提前终止 Stage 1 训练。")
+                                break  # 加入普通的 break 防止无效训练
                 print(log_str)
 
         #阶段2：

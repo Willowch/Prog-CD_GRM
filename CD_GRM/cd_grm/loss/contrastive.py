@@ -24,9 +24,11 @@ class InfoNCELoss(nn.Module):
         z_a = torch.clamp(z_a, min=-1e4, max=1e4)
         z_b = torch.clamp(z_b, min=-1e4, max=1e4)
         if torch.isnan(z_a).any() or torch.isnan(z_b).any():
-            print("⚠️ 警告: 在归一化前检测到 NaN! 正在返回无梯度的零损失以跳过此 Batch。")
-            # 必须这样构造 Dummy Loss，否则 backward() 会断开计算图报错
-            dummy_loss = (z_a.sum() * 0.0) + (z_b.sum() * 0.0)
+            print("⚠️ 警告: 检测到 NaN!")
+            # 使用 nan_to_num 将 nan 转为 0，然后再乘 0.0，确保返回真实的 0.0 而非 NaN
+            z_a_safe = torch.nan_to_num(z_a)
+            z_b_safe = torch.nan_to_num(z_b)
+            dummy_loss = (z_a_safe.sum() * 0.0) + (z_b_safe.sum() * 0.0)
             return dummy_loss
 
         z_a_norm = F.normalize(z_a, p=2, dim=-1, eps=1e-5)
