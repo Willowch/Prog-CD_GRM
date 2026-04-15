@@ -1,19 +1,12 @@
-# 核心深度学习框架 (Colab 已预装，本地运行需根据 CUDA 版本调整)
-torch>=2.0.0
-
-# 推荐系统基础底座 (严格锁定论文要求的版本)
+#torch>=2.0,<2.3
 recbole==1.2.1
-
-# 实验监控与日志
-tensorboard>=2.10.0
-
-# 配置文件解析
+optuna>=3,<4
+tensorboard>=2.10
 PyYAML>=6.0
-
-# 进度条与工具库
-tqdm>=4.65.0
-numpy>=1.22.0
-scipy>=1.8.0
-
-optuna>=3.0.0
-numpy>=1.22.0,<2.0.0
+tqdm>=4.65
+numpy>=1.22,<2.0
+scipy>=1.8
+pandas>=1.5
+scikit-learn>=1.0
+colorlog>=4.7
+colorama>=0.4.4

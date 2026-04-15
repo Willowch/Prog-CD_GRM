@@ -60,7 +60,7 @@ def build_bert4rec_overrides(raw_config: dict) -> dict:
 
 
 def main() -> None:
-    args = build_common_parser()
+    args = build_common_parser("Train BERT4Rec.").parse_args()
 
     config_path = resolve_config_path(args.config)
     raw_config = load_raw_config(config_path)
