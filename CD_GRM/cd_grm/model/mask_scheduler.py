@@ -48,20 +48,23 @@ class CosineMaskScheduler(nn.Module):
             t:扩散时间步 shape:[batch_size]
         """
         batch_size, seq_len = x_start.shape
-        extract_alpha = self.alpha_bar_t[t]# [batch_size]
-        extract_alpha = extract_alpha.unsqueeze(-1)# [batch_size, 1]
-        extract_alpha = extract_alpha.expand(batch_size, seq_len)#[batch_size, m_layer]
+        extract_alpha = self.alpha_bar_t[t].unsqueeze(-1).expand(batch_size, seq_len)#[batch_size, m_layer]
 
-        # 生成随机张量
-        rand_tensor = torch.rand_like(
-            x_start,
-            dtype=torch.float32
-        )# [batch_size, m_layer]
-        mask_bool = rand_tensor < (1.0 - extract_alpha)
-        # True:MASK False:保留原token [batch_size, m_layer]
+        rand_tensor = torch.rand_like(x_start, dtype=torch.float32)# [batch_size, m_layer]
+        mask_bool = rand_tensor < (1.0 - extract_alpha)# [batch_size, m_layer]
+
+        # 强制每个样本至少 mask 一个位置
+        no_mask_rows = ~mask_bool.any(dim=1)#[bs]按行找是否有true，有true的行经取反后变为faslse
+        #整行无掩码的行取反后为 true；
+        if no_mask_rows.any():#若有整行无掩码的
+            row_idx = no_mask_rows.nonzero(as_tuple=False).squeeze(-1)#找出这些行 索引；[num_nomask]
+            col_idx = torch.randint(0, seq_len, (row_idx.numel(),), device=x_start.device)#[num_nomask]
+            mask_bool[row_idx, col_idx] = True #强制转为mask
+
         x_masked = x_start.clone()
         x_masked[mask_bool] = self.mask_token_id
         return x_masked, mask_bool
+
 
     def get_inference_mask_ratio(self, step: int) -> float:
         #step:当前步数

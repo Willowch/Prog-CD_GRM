@@ -34,9 +34,6 @@ class CD_GRM_Loss_Engine(nn.Module):
         self.graph_builder = graph_builder
         self.cl_loss_fn = cl_loss_fn
         self._tie_embeddings()
-        self.ce_loss_fn = nn.CrossEntropyLoss(
-            ignore_index=self.PAD_TOKEN   # 忽略PADtoken
-        )
     def _tie_embeddings(self):
         if self.transformer is not None: # 如果 transformer已经初始化
             self.transformer.item_embedding = self.item_embedding
@@ -69,7 +66,7 @@ class CD_GRM_Loss_Engine(nn.Module):
             walk_length
         )
         # 返回所有训练需要的数据
-        return logits, true_sids, target_latent, view_b_seq, commit_loss
+        return logits, true_sids,mask_bool, target_latent, view_b_seq, commit_loss
         #logits:[bs,m_layer,sid_vocab_size];true_sids:[bs,m_layer];target_latent:[bs,m_layer,emb_l]
         #view_b_seq:[bs,m_layer]
 
@@ -93,12 +90,19 @@ class CD_GRM_Loss_Engine(nn.Module):
 
         else:
             #计算 预测损失 预测和图的对比损失 量化损失 + 动态权重调整
-            logits, true_sids, target_latent, view_b_seq, commit_loss = \
+            logits, true_sids,mask_bool, target_latent, view_b_seq, commit_loss = \
                 self.forward_train(history_seq, target_item)
 
-            flat_logits = logits.view(-1, self.SID_VOCAB_SIZE)#[bs*m_layer,sid_vocab_size]
-            flat_targets = true_sids.view(-1)#[bs*m_layer]
-            loss_ce = self.ce_loss_fn(flat_logits, flat_targets)#交叉熵对比
+            flat_logits = logits.reshape(-1, self.SID_VOCAB_SIZE)#[bs*m_layer,sid_vocab_size]
+            flat_targets = true_sids.reshape(-1)#[bs*m_layer]
+            flat_mask = mask_bool.reshape(-1)#[bs*m_layer]
+            if not flat_mask.any():
+                raise RuntimeError("No masked positions found in stage2 CE computation.")
+
+            loss_ce = F.cross_entropy(
+                flat_logits[flat_mask],
+                flat_targets[flat_mask]
+            )#交叉熵对比
 
             z_a = target_latent.mean(dim=1)#[bs,emb_l]
             e_view_b = self.item_embedding(view_b_seq)#[bs,m_layer,emb_l]

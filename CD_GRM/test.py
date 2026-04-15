@@ -22,6 +22,13 @@ from CD_GRM.utils import (
 )
 from CD_GRM.cd_grm.metrics.evaluator import TopKEvaluator  #导入评估器
 from CD_GRM.cd_grm.cd_grm_model import CD_GRM_Model  #导入CD_GRM
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.*",
+    category=FutureWarning,
+)
 
 
 #元数据处理

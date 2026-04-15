@@ -44,61 +44,128 @@ class AMPTrainer:
             self.evaluator = TopKEvaluator(k_list=[self.val_k])
             self._init_user_history_dict()#构建全量历史
 
-    def _setup_optimizer_and_scheduler(self, stage: int):
-        """"""
+    def _configure_stage(self, stage: int):
+        engine = self.model.engine
 
-        if not hasattr(self, 'optimizer') or self.optimizer is None:
-            self.optimizer = AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        # 先全部关掉，避免遗漏
+        for _, param in engine.named_parameters():
+            param.requires_grad = False
+
+        if stage == 1:
+            # Stage1: 只训练 item embedding；quantizer 通过 EMA buffer 更新
+            for name, param in engine.named_parameters():
+                if name.startswith("item_embedding."):
+                    param.requires_grad = True
+
+            engine.quantizer.freeze_codebook = False
+
         else:
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.learning_rate#将该参数组的学习率重置为当前self.learning_rate
+            # Stage2: 训练 transformer + item embedding + log_vars
+            for name, param in engine.named_parameters():
+                if name.startswith("transformer."):
+                    param.requires_grad = True
+                elif name.startswith("item_embedding."):
+                    param.requires_grad = True
+                elif name == "log_vars":
+                    param.requires_grad = True
 
-        if stage == 1:#Stage 1：预训练 RQ-VAE / item embedding
-            if hasattr(self.model.engine, 'transformer') and self.model.engine.transformer is not None:
-                for param in self.model.engine.transformer.parameters():
-                    param.requires_grad = False#transformer不参与训练
+            engine.quantizer.freeze_codebook = self.freeze_rqvae_stage2
 
-            for param in self.model.engine.item_embedding.parameters():
-                param.requires_grad = True#embedding参与训练
+    def _split_decay_params(self, named_params):
+        decay_params = []
+        no_decay_params = []
 
-            if hasattr(self.model.engine, 'quantizer'):
-                for param in self.model.engine.quantizer.parameters():
-                    param.requires_grad = True#RQ-VAE参与训练
+        for name, param in named_params:
+            if not param.requires_grad:
+                continue
 
-                self.model.engine.quantizer.freeze_codebook = False#允许EMA更新
+            is_no_decay = (
+                    name.endswith(".bias")
+                    or "norm" in name.lower()
+                    or name == "log_vars"
+            )
 
-            epochs_for_scheduler = self.stage1_epochs#Stage1的scheduler总轮数
-        else:#Stage 2：主干联合训练
-            if hasattr(self.model.engine, 'transformer') and self.model.engine.transformer is not None:
-                for param in self.model.engine.transformer.parameters():
-                    param.requires_grad = True#transformer允许训练
+            if is_no_decay:
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
 
-            if hasattr(self.model.engine, 'quantizer'):
-                if self.freeze_rqvae_stage2:
-                    for param in self.model.engine.quantizer.parameters():
-                        param.requires_grad = False
-                    #RQ-VAE不允许训练
-                    self.model.engine.quantizer.freeze_codebook = True
+        return decay_params, no_decay_params
 
-                else:# stage2不冻结quantizer
-                    for param in self.model.engine.quantizer.parameters():
-                        param.requires_grad = True
+    def _build_stage_param_groups(self, stage: int):
+        engine = self.model.engine
+        named_params = list(engine.named_parameters())
 
-                    self.model.engine.quantizer.freeze_codebook = False
+        item_named = [
+            (n, p) for n, p in named_params
+            if n.startswith("item_embedding.") and p.requires_grad
+        ]
+        transformer_named = [
+            (n, p) for n, p in named_params
+            if n.startswith("transformer.") and p.requires_grad
+        ]
+        logvar_named = [
+            (n, p) for n, p in named_params
+            if n == "log_vars" and p.requires_grad
+        ]
 
-            epochs_for_scheduler = self.epochs# Stage 2的scheduler总轮数
+        groups = []
 
+        def add_group(named_list, lr, weight_decay):
+            if not named_list:
+                return
+            decay_params, no_decay_params = self._split_decay_params(named_list)
+            if decay_params:
+                groups.append({
+                    "params": decay_params,
+                    "lr": lr,
+                    "weight_decay": weight_decay,
+                })
+            if no_decay_params:
+                groups.append({
+                    "params": no_decay_params,
+                    "lr": lr,
+                    "weight_decay": 0.0,
+                })
 
+        if stage == 1:
+            add_group(item_named, lr=self.learning_rate, weight_decay=self.weight_decay)
+        else:
+            add_group(transformer_named, lr=self.learning_rate, weight_decay=self.weight_decay)
+            add_group(item_named, lr=self.learning_rate * 0.3, weight_decay=self.weight_decay)
+
+            if logvar_named:
+                groups.append({
+                    "params": [p for _, p in logvar_named],
+                    "lr": self.learning_rate * 0.05,
+                    "weight_decay": 0.0,
+                })
+
+        return groups
+
+    def _setup_optimizer_and_scheduler(self, stage: int):
+        self._configure_stage(stage)
+
+        param_groups = self._build_stage_param_groups(stage)
+        if not param_groups:
+            raise RuntimeError(f"No trainable parameters found for stage={stage}")
+
+        # 每个 stage 都重建全新的 optimizer，避免复用上一阶段动量
+        self.optimizer = AdamW(
+            param_groups,
+            betas=(0.9, 0.98),
+            eps=1e-8,
+        )
+
+        epochs_for_scheduler = self.stage1_epochs if stage == 1 else self.epochs
         total_steps = epochs_for_scheduler * len(self.train_dataloader)
-        # 总训练步数 = 当前阶段总 epoch 数 × 每个 epoch 的 batch 数
-
-        warmup_steps = int(total_steps * 0.1)#预热步数占10%
+        warmup_steps = int(total_steps * 0.1)
 
         self.scheduler = self._get_cosine_schedule_with_warmup(
-            optimizer=self.optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
-        )# 创建 warmup + cosine 的学习率调度器
-
-
+            optimizer=self.optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
+        )
 
     def _get_cosine_schedule_with_warmup(self, optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5):
         # 构建“先 warmup 再 cosine 衰减”的学习率调度器
@@ -119,7 +186,8 @@ class AMPTrainer:
         progress_bar = tqdm(
             self.train_dataloader,
             desc=f"Stage {stage} Train Epoch {epoch_idx}/{self.stage1_epochs if stage == 1 else self.epochs}",
-            leave=False
+            leave=False,
+            disable=True
         )
 
         for step, batch_data in enumerate(progress_bar):
@@ -195,7 +263,7 @@ class AMPTrainer:
             self.model.infer_engine.invalidate_trie_cache() #验证前主动清空 trie 缓存，避免使用过期 SID 映射
 
         all_preds, all_targets = [], []
-        progress_bar = tqdm(self.valid_dataloader, desc=f"Valid Epoch {epoch_idx}", leave=False)
+        progress_bar = tqdm(self.valid_dataloader, desc=f"Valid Epoch {epoch_idx}", leave=False,disable=True)
 
         with torch.no_grad():
             for step, batch_tuple in enumerate(progress_bar):
@@ -247,7 +315,19 @@ class AMPTrainer:
             print(f">>>阶段1：预训练RQ-VAE和物品embedding层({self.stage1_epochs} Epochs) <<<")
 
             self._setup_optimizer_and_scheduler(stage=1)
+            # 在 stage1 开始前，先算一个“最早允许健康剪枝”的 epoch
+            steps_per_epoch = len(self.train_dataloader)
+            quantizer = self.model.engine.quantizer
 
+            min_health_epoch = max(
+                3,
+                math.ceil(
+                    max(
+                        quantizer.dead_code_warmup_steps,
+                        quantizer.dead_code_patience,
+                    ) / max(1, steps_per_epoch)
+                )
+            )
             for epoch in range(1, self.stage1_epochs + 1):
                 avg_train_loss, avg_train_ce, avg_train_cl = self.train_epoch(epoch, stage=1)
 
@@ -260,7 +340,9 @@ class AMPTrainer:
                         act_rate = cb_metrics.get('Active_Rate_Mean', 1.0)
                         coll_rate = cb_metrics.get('Collision_Rate', 0.0)
                         log_str += f" | ActRate: {act_rate:.2f} | CollRate: {coll_rate:.4f}"
-                        if act_rate < 0.05 or coll_rate > 0.95:
+                        if epoch < min_health_epoch:
+                            log_str += f" | HealthCheckOnly (prune after epoch {min_health_epoch})"
+                        elif act_rate < 0.02 and coll_rate > 0.95:
                             log_str += " ⚠️[阶段1：出现码本崩塌]"
                             print(log_str)
                             if self.trial is not None:
@@ -327,9 +409,9 @@ class AMPTrainer:
 
                     log_str += f" | ActRate: {act_rate:.2f} | CollRate: {coll_rate:.4f}"
 
-                    if act_rate < 0.1 or coll_rate > 0.9:
+                    if act_rate < 0.03 or coll_rate > 0.95:
                         is_healthy = False
-                        log_str += " ⚠️[Unhealthy]"
+                        log_str += " [Unhealthy]"
 
                 #Optuna 剪枝逻辑 (只在验证轮次触发)
                 if self.trial is not None:
@@ -340,18 +422,21 @@ class AMPTrainer:
                         print(f"\n[Pruning] ⚠️ Trial {self.trial.number} pruned at epoch {epoch}.")
                         raise optuna.exceptions.TrialPruned()#抛出异常，中止当前 trial
 
-
+                improved = valid_ndcg > best_valid_score
                 #早停与最佳模型保存:
-                if is_healthy and valid_ndcg > best_valid_score:
+                if improved:
                     best_valid_score = valid_ndcg
                     patience_counter = 0#早停计数器清0
                     torch.save(self.model.state_dict(), self.best_model_path)
                     log_str += f" --> [Best Model Saved!]"
-
+                    if not is_healthy:
+                        log_str += " [Warning: codebook unhealthy]"
                 else:
                     # 如果当前分数没有提升，或者 codebook 不健康
                     patience_counter += 1
-                    reason = "Score drop" if is_healthy else "Codebook collapse"
+                    reason = "Score drop"
+                    if not is_healthy:
+                        reason += " + codebook warning"
                     log_str += f" | Patience: {patience_counter}/{self.patience} ({reason})"
 
                 print(log_str)

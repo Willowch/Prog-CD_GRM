@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from copy import deepcopy
 from pathlib import Path
 import optuna
@@ -19,6 +20,13 @@ from CD_GRM.utils import (
 
 from CD_GRM.cd_grm.trainer import AMPTrainer
 from CD_GRM.cd_grm.cd_grm_model import CD_GRM_Model
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.*",
+    category=FutureWarning,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,30 +49,41 @@ def build_runtime_meta(dataset_name: str) -> dict:
 def make_objective(base_raw_config: dict, runtime_meta: dict,args: argparse.Namespace):
 
     def objective(trial: optuna.trial.Trial) -> float:
-
-        raw_config = deepcopy(base_raw_config)# 对基础配置做深拷贝 这样每个 trial 的参数修改都不会污染原始配置
-        raw_config["learning_rate"] = trial.suggest_float(
-            "learning_rate",
-            1e-4,#搜索下界
-            5e-3,#搜索上界
-            log=True,#采用对数尺度采样，适合学习率这种跨数量级参数
-        )
-
-        raw_config["model_config"]["tau"] = trial.suggest_float(
-            "tau",#超参数名tau
-            0.05,#搜索下界
-            0.2,#搜索上界
-        )
-
-        raw_config["model_config"]["diffusion_steps"] = trial.suggest_categorical(
-            "diffusion_steps",#超参数名diffusion_steps
-            [10, 20, 50],#从这几个离散候选值中选一个
-        )
+        raw_config = deepcopy(base_raw_config)
+        mcfg = raw_config["model_config"]
 
         raw_config["train_batch_size"] = trial.suggest_categorical(
-            "train_batch_size",#超参数名：train_batch_size
-            [256, 512],
+            "train_batch_size", [128, 256]
         )
+
+        raw_config["learning_rate"] = trial.suggest_float(
+            "learning_rate", 3e-4, 8e-4, log=True
+        )
+        raw_config["weight_decay"] = trial.suggest_float(
+            "weight_decay", 3e-4, 2e-3, log=True
+        )
+
+        mcfg["tau"] = trial.suggest_float(
+            "tau", 0.05, 0.12, log=True
+        )
+        mcfg["diffusion_steps"] = trial.suggest_categorical(
+            "diffusion_steps", [5, 10, 20]
+        )
+        mcfg["max_degree"] = trial.suggest_categorical(
+            "max_degree", [10, 20]
+        )
+
+        raw_config["stage1_epochs"] = trial.suggest_categorical(
+            "stage1_epochs", [10, 12, 15]
+        )
+        raw_config["freeze_rqvae_stage2"] = trial.suggest_categorical(
+            "freeze_rqvae_stage2", [True]
+        )
+
+        # 第二阶段可再打开，先别和上面一批混太多维度
+        # mcfg["dead_code_min_usage_ratio"] = trial.suggest_categorical(
+        #     "dead_code_min_usage_ratio", [0.02, 0.05, 0.10, 0.20]
+        # )
 
         set_global_seed(raw_config["seed"])
 
@@ -77,7 +96,20 @@ def make_objective(base_raw_config: dict, runtime_meta: dict,args: argparse.Name
         print(f"\n[Trial {trial.number}] Building dataset: {raw_config['dataset']}")#打印当前 trial 编号和正在构建的数据集名称
         dataset = create_dataset(rb_config)
         train_data, valid_data, _ = data_preparation(rb_config, dataset)
+        steps_per_epoch = len(train_data) #没轮次的步数
+        warmup_steps = raw_config["model_config"].get("dead_code_warmup_steps", 100)#设定的热身步数
+        min_stage1_epochs = math.ceil(warmup_steps / max(1, steps_per_epoch))#需要跑完热身步数的最小轮次向上取整
+
+        raw_config["stage1_epochs"] = max(
+            raw_config["stage1_epochs"],
+            min_stage1_epochs
+        )
+
         device = resolve_device(raw_config, args.device)
+        raw_config["model_config"]["max_degree"] = min(
+            raw_config["model_config"]["max_degree"],
+            int(train_data.dataset.item_num) - 1
+        )
         #模型准备
         model = CD_GRM_Model(
             raw_config,# 把当前 trial 使用的配置传给模型
@@ -126,17 +158,25 @@ def main() -> None:
     print("=" * 60)
 
     pruner = optuna.pruners.MedianPruner(
-        n_startup_trials=5,#前5个trial不剪枝，先积累对比基线
-        n_warmup_steps=10,# 每个 trial 前 10 个汇报 step 不剪枝
-        interval_steps=1,# 每隔 1 个 step 检查一次是否需要剪枝
+        n_startup_trials=5,
+        n_warmup_steps=10,
+        interval_steps=1,
+    )
+
+    sampler = optuna.samplers.TPESampler(
+        seed=base_raw_config["seed"],
+        multivariate=True,
+        group=True,
+        n_startup_trials=10,
     )
 
     study = optuna.create_study(
-        direction="maximize",# 优化目标是“越大越好”，例如最大化 NDCG/HR 等验证指标
-        study_name=runtime_meta["study_name"],# 当前 study 名称
-        storage=runtime_meta["storage_uri"],# 使用 SQLite 数据库存储调参过程和结果
-        load_if_exists=True,# 如果这个 study 已存在，则继续使用，不重新创建
-        pruner=pruner,# 指定当前 study 使用的剪枝器
+        direction="maximize",
+        study_name=runtime_meta["study_name"],
+        storage=runtime_meta["storage_uri"],
+        load_if_exists=True,
+        sampler=sampler,
+        pruner=pruner,
     )
 
     objective = make_objective(base_raw_config, runtime_meta,args)# 用基础配置和运行时元信息构造 objective 函数
