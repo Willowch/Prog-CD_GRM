@@ -151,7 +151,7 @@ class ParallelDenoisingEngine(nn.Module):
             for node, score, path in queue:
                 for item_id in node.item_ids:
                     valid_candidates.append(
-                        (item_id, score + random.uniform(0, 1e-6), path)
+                        (item_id, score, path)
                     )
 
             valid_candidates.sort(key=lambda x: x[1], reverse=True)

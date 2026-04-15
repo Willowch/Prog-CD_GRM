@@ -178,7 +178,7 @@ class AMPTrainer:
                 self.user_history_dict[u] = set()
 
             self.user_history_dict[u].update(seq)#将该条样本中的历史序列所有 item 加入集合
-           # self.user_history_dict[u].add(tgt)
+            self.user_history_dict[u].add(tgt)
 
         for u in self.user_history_dict:
             if 0 in self.user_history_dict[u]:#去掉padding
