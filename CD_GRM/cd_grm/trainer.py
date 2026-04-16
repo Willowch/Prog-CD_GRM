@@ -41,7 +41,11 @@ class AMPTrainer:
 
         if self.valid_dataloader is not None:
             self.val_k = 10 #验证top-k固定为10
-            self.evaluator = TopKEvaluator(k_list=[self.val_k])
+            self.evaluator = TopKEvaluator(
+                k_list=[self.val_k],
+                codebook_size=self.model.engine.quantizer.codebook_size,
+                m_layers=self.model.engine.quantizer.num_layers,
+            )
             self._init_user_history_dict()#构建全量历史
 
     def _configure_stage(self, stage: int):
@@ -60,16 +64,17 @@ class AMPTrainer:
             engine.quantizer.freeze_codebook = False
 
         else:
-            # Stage2: 训练 transformer + item embedding + log_vars
+            # Stage2: 训练 transformer  + log_vars
             for name, param in engine.named_parameters():
                 if name.startswith("transformer."):
-                    param.requires_grad = True
-                elif name.startswith("item_embedding."):
                     param.requires_grad = True
                 elif name == "log_vars":
                     param.requires_grad = True
 
-            engine.quantizer.freeze_codebook = self.freeze_rqvae_stage2
+            if not self.freeze_rqvae_stage2:
+                raise ValueError("Fixed-target stage2 requires freeze_rqvae_stage2=True.")
+
+            engine.quantizer.freeze_codebook = True
 
     def _split_decay_params(self, named_params):
         decay_params = []
@@ -132,7 +137,6 @@ class AMPTrainer:
             add_group(item_named, lr=self.learning_rate, weight_decay=self.weight_decay)
         else:
             add_group(transformer_named, lr=self.learning_rate, weight_decay=self.weight_decay)
-            add_group(item_named, lr=self.learning_rate * 0.3, weight_decay=self.weight_decay)
 
             if logvar_named:
                 groups.append({
@@ -166,6 +170,8 @@ class AMPTrainer:
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
         )
+        trainable_names = [n for n, p in self.model.engine.named_parameters() if p.requires_grad]
+        print(f"[Stage2 Trainable] {trainable_names}")
 
     def _get_cosine_schedule_with_warmup(self, optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5):
         # 构建“先 warmup 再 cosine 衰减”的学习率调度器

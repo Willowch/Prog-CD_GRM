@@ -21,6 +21,7 @@ class DenoisingTransformer(nn.Module):
             padding_idx=0         # 0 表示 padding
         )# shape: [item_vocab_size, embed_dim]
 
+
         self.sid_embedding = nn.Embedding(
             sid_vocab_size,       # sid大小：256^4
             embed_dim,

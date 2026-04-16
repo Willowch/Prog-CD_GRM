@@ -26,6 +26,10 @@ class CD_GRM_Model(nn.Module):
             num_layers=self.cfg['m_layers'],
             codebook_size=self.cfg['codebook_size'],
             embed_dim=self.cfg['embed_dim'],
+            commitment_cost=self.cfg['commitment_cost'],
+            decay=self.cfg['decay'],
+            eps=self.cfg['eps'],
+            restart_thres=self.cfg['restart_thres'],
             # [FIX-DEAD-CODE] Pass dead-code restart controls into the quantizer.
             dead_code_warmup_steps=self.cfg.get('dead_code_warmup_steps', 100),
             dead_code_patience=self.cfg.get('dead_code_patience', 100),
@@ -42,7 +46,8 @@ class CD_GRM_Model(nn.Module):
             sid_vocab_size=sid_vocab_size,
             embed_dim=self.cfg['embed_dim'],
             num_layers=self.cfg['transformer_layers'],
-            nhead=self.cfg['nhead']
+            nhead=self.cfg['nhead'],
+            dropout=self.cfg['dropout'],
         )
 
         graph_builder = GraphViewBuilder(

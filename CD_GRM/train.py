@@ -53,7 +53,7 @@ def make_objective(base_raw_config: dict, runtime_meta: dict,args: argparse.Name
         mcfg = raw_config["model_config"]
 
         raw_config["train_batch_size"] = trial.suggest_categorical(
-            "train_batch_size", [128, 256]
+            "train_batch_size", [64, 128]
         )
 
         raw_config["learning_rate"] = trial.suggest_float(
@@ -70,11 +70,11 @@ def make_objective(base_raw_config: dict, runtime_meta: dict,args: argparse.Name
             "diffusion_steps", [5, 10, 20]
         )
         mcfg["max_degree"] = trial.suggest_categorical(
-            "max_degree", [10, 20]
+            "max_degree", [5, 7]
         )
 
         raw_config["stage1_epochs"] = trial.suggest_categorical(
-            "stage1_epochs", [10, 12, 15]
+            "stage1_epochs", [8, 10, 12, 15]
         )
         raw_config["freeze_rqvae_stage2"] = trial.suggest_categorical(
             "freeze_rqvae_stage2", [True]

@@ -11,7 +11,7 @@ class ResidualQuantizer(nn.Module):
                  codebook_size: int = 256,   # 每层 codebook 大小
                  embed_dim: int = 128,       # 向量维度
                  commitment_cost: float = 0.25,#损失衰减率
-                 decay: float = 0.99,        # EMA衰减率
+                 decay: float = 0.8,        # EMA衰减率
                  eps: float = 1e-5,          # 平滑率
                  restart_thres: float = 1.0,  # 死码阈值
                  dead_code_warmup_steps: int = 100,

@@ -21,6 +21,8 @@ class CD_GRM_Loss_Engine(nn.Module):
             embed_dim,          # embedding 维度
             padding_idx=0       # 0 作为 PAD token，不参与训练
         )
+        # 【必须添加这一行】强制限制物品向量的初始化范围，防止“黑洞效应”吞噬所有死码
+        nn.init.uniform_(self.item_embedding.weight, -0.05, 0.05)
         # MASK token
         self.MASK_TOKEN = codebook_size + 1
         # PAD token
