@@ -37,7 +37,7 @@ model_config:                       # 你的自定义模型配置；通常会在
   max_degree: 10                    # 图视图构建时的最大邻居数/最大出度；限制图过大或节点邻接过多
   dead_code_warmup_steps: 20        # 死码本检测的预热步数；训练前 100 步内先不急着处理低使用率 code
   dead_code_patience: 20            # 死码本容忍步数；连续低使用若达到该阈值，再触发处理逻辑
-  dead_code_min_usage_ratio: 0.05   # 死码本最低使用率阈值；若某 code 使用率低于 0.1（或实现中按比例解释）可能被判定为低活跃
+  dead_code_min_usage_ratio: 0.10   # 死码本最低使用率阈值；All_Beauty 上更高阈值能减少 SID 碰撞
   commitment_cost: 0.25
   decay: 0.8
   eps: 1.0e-5
