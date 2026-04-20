@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from .model.semantic_id import ResidualQuantizer
 from .model.mask_scheduler import CosineMaskScheduler
-from .model.transformer import DenoisingTransformer
+from .model.transformer import DenoisingTransformer, SeqGraphFusionRanker
 from .model.graph_view import GraphViewBuilder
 from .loss.contrastive import InfoNCELoss
 from .model.cd_grm import CD_GRM_Loss_Engine
@@ -50,10 +50,23 @@ class CD_GRM_Model(nn.Module):
             dropout=self.cfg['dropout'],
         )
 
+        seq_ranker = None
+        if self.cfg.get('use_seq_graph_fusion', False):
+            seq_ranker = SeqGraphFusionRanker(
+                item_vocab_size=self.item_vocab_size,
+                embed_dim=self.cfg['embed_dim'],
+                num_layers=self.cfg.get('ranker_layers', self.cfg['transformer_layers']),
+                nhead=self.cfg['nhead'],
+                max_seq_len=config_dict.get('MAX_ITEM_LIST_LENGTH', 50),
+                dropout=self.cfg.get('ranker_dropout', self.cfg['dropout']),
+            )
+
         graph_builder = GraphViewBuilder(
             item_vocab_size=self.item_vocab_size,
             dataset=dataset,
-            max_degree=self.cfg['max_degree']
+            max_degree=self.cfg['max_degree'],
+            window_size=self.cfg.get('graph_window_size', 3),
+            walk_temp=self.cfg.get('graph_walk_temp', 0.8),
         )
 
         cl_loss_fn = InfoNCELoss(
@@ -69,8 +82,22 @@ class CD_GRM_Model(nn.Module):
             quantizer=quantizer,
             scheduler=scheduler,
             transformer=transformer,
+            seq_ranker=seq_ranker,
             graph_builder=graph_builder,
-            cl_loss_fn=cl_loss_fn
+            cl_loss_fn=cl_loss_fn,
+            item_loss_weight=self.cfg.get('item_loss_weight', 0.0),
+            hybrid_semantic_weight=self.cfg.get('hybrid_semantic_weight', 0.0),
+            stage2_aux_loss_weight=self.cfg.get('stage2_aux_loss_weight', 1.0),
+            finetune_item_embedding_stage2=self.cfg.get('finetune_item_embedding_stage2', False),
+            item_embedding_stage2_lr_scale=self.cfg.get('item_embedding_stage2_lr_scale', 0.5),
+            graph_context_decay=self.cfg.get('graph_context_decay', 0.8),
+            graph_prior_weight=self.cfg.get('graph_prior_weight', 0.0),
+            use_target_aware_graph_prior=self.cfg.get('use_target_aware_graph_prior', False),
+            graph_prior_sim_scale=self.cfg.get('graph_prior_sim_scale', 1.0),
+            graph_prior_recency_strength=self.cfg.get('graph_prior_recency_strength', 1.0),
+            graph_prior_second_hop_weight=self.cfg.get('graph_prior_second_hop_weight', 0.0),
+            history_repeat_prior_weight=self.cfg.get('history_repeat_prior_weight', 0.0),
+            last_item_prior_weight=self.cfg.get('last_item_prior_weight', 0.0),
         )
 
         self.infer_engine = ParallelDenoisingEngine(
@@ -82,5 +109,5 @@ class CD_GRM_Model(nn.Module):
     def calculate_loss(self, history_seq, target_item, stage=2):
         return self.engine.calculate_loss(history_seq, target_item, stage=stage)
 
-    def predict_topk(self, history_seq, top_k,full_history_list):
-        return self.infer_engine.predict_item(history_seq, top_k=top_k, full_history_list=full_history_list)
+    def full_sort_predict(self, interaction):
+        return self.infer_engine.predict_scores(interaction["item_id_list"])

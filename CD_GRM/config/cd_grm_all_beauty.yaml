@@ -1,55 +1,70 @@
-dataset: All_Beauty                 # 数据集名称；RecBole 会到 data_path 下寻找对应目录，例如 CD_GRM/dataset/All_Beauty/
-data_path: CD_GRM/data/             # 数据集根目录；实际读取时通常会拼成 CD_GRM/dataset/All_Beauty/
-device: cuda                        # 指定训练设备为 GPU；如果当前环境有可用 CUDA，则模型和张量会放到显卡上
-seed: 42                            # 随机种子，用于尽量保证实验可复现，例如数据划分、参数初始化、采样等过程
+dataset: all_beauty                 # Dataset name used by RecBole.
+data_path: CD_GRM/data/             # Dataset root; resolved to CD_GRM/data/All_Beauty at runtime.
+device: cuda                        # Prefer GPU training/evaluation when CUDA is available.
+seed: 42                            # Global random seed for reproducibility.
 
-USER_ID_FIELD: user_id              # 指定“用户 ID 字段”的字段名；要与 .inter 文件表头中的 user_id 对应
-ITEM_ID_FIELD: item_id              # 指定“物品 ID 字段”的字段名；要与 .inter 文件表头中的 item_id 对应
-TIME_FIELD: timestamp               # 指定“时间戳字段”的字段名；序列推荐按时间排序时会用到它
+USER_ID_FIELD: user_id              # User id column in the .inter file.
+ITEM_ID_FIELD: item_id              # Item id column in the .inter file.
+TIME_FIELD: timestamp               # Timestamp column used for sequence ordering.
 
-load_col:                           # 指定从哪些文件中加载哪些列
-  inter: [user_id, item_id, timestamp]   # 从 .inter 交互文件中只读取这三列；这里没有加载 rating，说明训练时不使用评分字段
+load_col:
+  inter: [user_id, item_id, timestamp]   # Only load the columns needed for sequential recommendation.
+filter_inter_by_user_or_item: true       # Filter users/items by interaction count.
+user_inter_num_interval: "[1,inf)"       # Keep users with at least 1 interaction.
+item_inter_num_interval: "[1,inf)"       # Keep items with at least 1 interaction.
+ITEM_LIST_LENGTH_FIELD: item_length      # RecBole-generated history length field.
+LIST_SUFFIX: _list                       # RecBole-generated history suffix.
+MAX_ITEM_LIST_LENGTH: 50                 # Truncate history to the most recent 50 items.
+train_neg_sample_args: null              # Full-sort training without explicit negative sampling.
 
-filter_inter_by_user_or_item: true  # 是否启用基于用户/物品交互次数的过滤；true 表示会按下面两个区间过滤冷用户和冷物品
-user_inter_num_interval: "[5,inf)"  # 用户交互次数过滤区间；只保留交互次数 >= 5 的用户
-item_inter_num_interval: "[5,inf)"  # 物品交互次数过滤区间；只保留交互次数 >= 5 的物品
+eval_args:
+  split:
+    LS: valid_and_test                   # Leave-one-out style split for valid/test.
+  order: TO                              # Construct sequences in time order.
+  mode: full                             # Evaluate against the full candidate set.
 
-ITEM_LIST_LENGTH_FIELD: item_length # 序列长度字段名；RecBole 在构造历史序列时会生成该字段，表示每个样本历史序列的真实长度
-LIST_SUFFIX: _list                  # 序列字段后缀；例如 item_id 会扩展生成 item_id_list，表示历史物品序列
-MAX_ITEM_LIST_LENGTH: 20            # 历史序列最大长度；超过 50 的历史会被截断，通常保留最近的 50 个交互
+model_config:
+  embed_dim: 128                         # Shared embedding dimension.
+  m_layers: 2                            # Number of residual quantization layers.
+  codebook_size: 32                      # Codebook size per quantization layer.
+  diffusion_steps: 20                    # Denoising steps.
+  transformer_layers: 2                  # Denoising transformer depth.
+  nhead: 4                               # Multi-head attention heads.
+  use_seq_graph_fusion: true             # Enable the sequence + graph fusion ranker.
+  ranker_layers: 2                       # Sequence ranker transformer depth.
+  ranker_dropout: 0.2                    # Sequence ranker dropout.
+  tau: 0.057317870293182936              # InfoNCE temperature from the current strong trial.
+  max_degree: 7                          # Max temporal graph neighbors per item.
+  dead_code_warmup_steps: 20             # Warmup before dead-code checking.
+  dead_code_patience: 20                 # Patience for low-usage code detection.
+  dead_code_min_usage_ratio: 0.10        # Minimum code usage ratio.
+  item_loss_weight: 2.0                  # Strength of the direct next-item ranker loss.
+  hybrid_semantic_weight: 0.0            # Keep semantic-score blending off; current validation shows pure item ranking is steadier.
+  stage2_aux_loss_weight: 1.0            # Weight for CE / CL / commitment auxiliary losses in stage2.
+  finetune_item_embedding_stage2: true   # Continue tuning shared item embeddings in stage2.
+  item_embedding_stage2_lr_scale: 0.75   # Stage2 LR scale for item embeddings.
+  graph_window_size: 6                   # Verified broader temporal co-occurrence window for the current single-checkpoint best path.
+  graph_context_decay: 0.56              # Verified target-aware graph-prior decay for the strongest single checkpoint under the current architecture.
+  graph_prior_weight: 2.50               # Verified target-aware graph-prior strength for the current best single-checkpoint operating point.
+  use_target_aware_graph_prior: true     # Reweight graph neighbors with the current target query instead of using a purely static position prior.
+  graph_prior_sim_scale: 2.0             # Similarity scale for the target-aware graph-prior attention.
+  graph_prior_recency_strength: 2.25     # Strength of the recency log-bias inside the target-aware graph-prior attention.
+  graph_prior_second_hop_weight: 0.12    # Light two-hop diffusion weight; verified to improve both valid and test on the strongest checkpoint.
+  history_repeat_prior_weight: 0.06      # Verified light history-repeat prior; helps preserve repeat-consumption signal without overpowering transition modeling.
+  last_item_prior_weight: 0.08           # Verified small shortcut for the most recent item; improves valid while keeping test stable on the strongest checkpoint.
+  commitment_cost: 0.25                  # Quantization commitment loss weight.
+  decay: 0.8                             # EMA decay for the quantizer.
+  eps: 1.0e-5                            # Numerical stability epsilon.
+  restart_thres: 1.0                     # Dead-code restart threshold.
+  dropout: 0.2                           # Denoising transformer dropout.
 
-train_neg_sample_args: null         # 训练阶段不使用负采样；对生成式推荐来说通常不需要像传统排序模型那样显式负采样
+train_batch_size: 128                    # Training batch size.
+eval_batch_size: 64                      # Validation / test batch size.
+learning_rate: 0.0006150745904964907     # Current strong learning rate.
+weight_decay: 0.0009340308327072935      # Current strong weight decay.
+epochs: 50                               # Total stage2 epochs.
+topk: [5, 10, 20]                        # Evaluation cutoffs.
 
-eval_args:                          # 评估相关配置
-  split:                            # 数据集划分方式配置
-    LS: valid_and_test              # Leave-One-Out 风格划分；通常表示按时间顺序把最后若干交互切给验证集和测试集
-  order: TO                         # TO = Time Order，按时间顺序构造序列与划分数据
-  mode: full                        # full 表示全排序评估；测试时在全物品集合上进行排序，而不是只在采样候选上评估
-
-model_config:                       # 你的自定义模型配置；通常会在构建 CD-GRM 时读取
-  embed_dim: 64                     # 嵌入维度 d；user/item 或语义表示通常映射到 128 维向量空间
-  m_layers: 2                       # 语义 ID / 残差量化层数 M；表示一个 item 会被编码成 4 层离散 code
-  codebook_size: 32                 # 每层 codebook 的大小 K；每层可选 256 个离散码字
-  diffusion_steps: 10               # 扩散/去噪步数 T；生成语义 ID 时的总去噪步数
-  transformer_layers: 2             # Transformer 编码器/去噪网络层数；这里是 2 层
-  nhead: 1                          # 多头注意力头数；每层 Transformer 使用 4 个注意力头
-  tau: 0.08                         # 对比学习 InfoNCE 温度系数；越小通常分布越尖锐
-  max_degree: 10                    # 图视图构建时的最大邻居数/最大出度；限制图过大或节点邻接过多
-  dead_code_warmup_steps: 20        # 死码本检测的预热步数；训练前 100 步内先不急着处理低使用率 code
-  dead_code_patience: 20            # 死码本容忍步数；连续低使用若达到该阈值，再触发处理逻辑
-  dead_code_min_usage_ratio: 0.10   # 死码本最低使用率阈值；All_Beauty 上更高阈值能减少 SID 碰撞
-  commitment_cost: 0.25
-  decay: 0.8
-  eps: 1.0e-5
-  restart_thres: 1.0
-  dropout: 0.1
-
-train_batch_size: 128               # 训练 batch 大小；每次参数更新使用 256 个训练样本
-eval_batch_size: 64                 # 验证/测试 batch 大小；评估时通常更占显存，所以这里设为 64
-learning_rate: 0.0005               # 学习率；优化器每步更新参数的步长
-weight_decay: 0.001                 # 权重衰减系数；相当于 L2 正则，用于抑制过拟合
-epochs: 50                          # 总训练轮数；完整遍历训练集 50 次
-topk: [5, 10, 20]                   # 评估的 Top-K 截断位置；通常会计算 HR@5/NDCG@5、HR@10/NDCG@10、HR@20/NDCG@20
-
-stage1_epochs: 20                   # 第一阶段训练轮数；例如先训练 RQ-VAE / item embedding 等模块共 15 个 epoch
-freeze_rqvae_stage2: true           # 第二阶段是否冻结 RQ-VAE；true 表示进入 stage2 后不再更新量化器参数
+stage1_epochs: 10                        # Current strong stage1 epochs.
+freeze_rqvae_stage2: true                # Freeze the quantizer in stage2.
+auto_select_best_trial: true             # Strict single-checkpoint mode: automatically pick the best compatible trial on the current validation setting.

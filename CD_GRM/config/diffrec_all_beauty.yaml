@@ -1,0 +1,93 @@
+# =========================
+# DiffRec on All_Beauty
+# =========================
+
+dataset: all_beauty
+data_path: CD_GRM/data/
+device: cuda:0
+seed: 42
+reproducibility: true
+show_progress: true
+
+# -------------------------------------------------
+# Data fields
+# Keep exactly the same data protocol as the rest of the project.
+# -------------------------------------------------
+USER_ID_FIELD: user_id
+ITEM_ID_FIELD: item_id
+TIME_FIELD: timestamp
+
+load_col:
+  inter: [user_id, item_id, timestamp]
+
+filter_inter_by_user_or_item: true
+user_inter_num_interval: "[1,inf)"
+item_inter_num_interval: "[1,inf)"
+
+# DiffRec is a general recommender on user-history matrices,
+# so no sequential max-length field is needed here.
+train_neg_sample_args: null
+
+# -------------------------------------------------
+# Evaluation
+# Keep the project's unified split / metric setting.
+# -------------------------------------------------
+eval_args:
+  group_by: user
+  order: TO
+  split: {LS: valid_and_test}
+  mode: full
+
+metrics: [Recall, NDCG]
+topk: [5, 10, 20]
+valid_metric: NDCG@10
+
+# -------------------------------------------------
+# Training
+# Official DiffRec uses AdamW, batch_size=400, epochs=1000,
+# and evaluates every 5 epochs with 20-epoch early-stop patience.
+# Here we map that to RecBole as eval_step=5, stopping_step=4.
+# -------------------------------------------------
+epochs: 1000
+eval_step: 5
+stopping_step: 4
+
+train_batch_size: 400
+eval_batch_size: 400
+
+learner: adamw
+learning_rate: 5.0e-5
+weight_decay: 0.0
+
+# -------------------------------------------------
+# Diffusion
+# These follow the official amazon-book_clean strong setting.
+# -------------------------------------------------
+noise_schedule: linear-var
+noise_scale: 1.0e-4
+noise_min: 5.0e-4
+noise_max: 5.0e-3
+sampling_noise: false
+sampling_steps: 0
+reweight: true
+mean_type: x0
+steps: 5
+history_num_per_term: 10
+beta_fixed: true
+
+# -------------------------------------------------
+# DNN
+# Official amazon-book_clean uses dims_dnn: [1000].
+# For your current All_Beauty setup, that is likely oversized,
+# so start from a smaller but still strong hidden width.
+# -------------------------------------------------
+dims_dnn: [200]
+embedding_size: 10
+mlp_act_func: tanh
+norm: false
+
+# Keep pure DiffRec.
+# If you later want T-DiffRec, change this to true.
+time-aware: false
+w_max: 1.0
+w_min: 0.1

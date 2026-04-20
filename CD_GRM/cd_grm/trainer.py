@@ -8,6 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import optuna
 from CD_GRM.cd_grm.metrics.evaluator import TopKEvaluator
+from CD_GRM.cd_grm.metrics.recbole_eval import evaluate_fullsort_recbole
 
 
 class AMPTrainer:
@@ -19,7 +20,8 @@ class AMPTrainer:
                  checkpoint_dir: str = "CD_GRM/checkpoints",
                  trial: optuna.trial.Trial = None,
                  stage1_epochs: int = 15,
-                 freeze_rqvae_stage2: bool = True):
+                 freeze_rqvae_stage2: bool = True,
+                 recbole_config=None):
 
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -46,7 +48,6 @@ class AMPTrainer:
                 codebook_size=self.model.engine.quantizer.codebook_size,
                 m_layers=self.model.engine.quantizer.num_layers,
             )
-            self._init_user_history_dict()#构建全量历史
 
     def _configure_stage(self, stage: int):
         engine = self.model.engine
@@ -64,9 +65,13 @@ class AMPTrainer:
             engine.quantizer.freeze_codebook = False
 
         else:
-            # Stage2: 训练 transformer  + log_vars
+            # Stage2: 训练 transformer / seq-ranker + log_vars
             for name, param in engine.named_parameters():
                 if name.startswith("transformer."):
+                    param.requires_grad = True
+                elif name.startswith("seq_ranker."):
+                    param.requires_grad = True
+                elif name.startswith("item_embedding.") and getattr(engine, "finetune_item_embedding_stage2", False):
                     param.requires_grad = True
                 elif name == "log_vars":
                     param.requires_grad = True
@@ -109,6 +114,10 @@ class AMPTrainer:
             (n, p) for n, p in named_params
             if n.startswith("transformer.") and p.requires_grad
         ]
+        seq_ranker_named = [
+            (n, p) for n, p in named_params
+            if n.startswith("seq_ranker.") and p.requires_grad
+        ]
         logvar_named = [
             (n, p) for n, p in named_params
             if n == "log_vars" and p.requires_grad
@@ -136,7 +145,10 @@ class AMPTrainer:
         if stage == 1:
             add_group(item_named, lr=self.learning_rate, weight_decay=self.weight_decay)
         else:
+            item_lr_scale = getattr(engine, "item_embedding_stage2_lr_scale", 0.5)
+            add_group(item_named, lr=self.learning_rate * item_lr_scale, weight_decay=self.weight_decay)
             add_group(transformer_named, lr=self.learning_rate, weight_decay=self.weight_decay)
+            add_group(seq_ranker_named, lr=self.learning_rate, weight_decay=self.weight_decay)
 
             if logvar_named:
                 groups.append({
@@ -183,7 +195,6 @@ class AMPTrainer:
             return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))) #超过预热部分cos增长
         return LambdaLR(optimizer, lr_lambda) #返回cos学习率调度器
 
-
     def train_epoch(self, epoch_idx: int, stage: int = 2):
         # 从训练数据中取出每批次对参数进行更新；记录三种损失；返回此轮次平均批损失；
 
@@ -200,7 +211,11 @@ class AMPTrainer:
             history_seq = batch_data['item_id_list'].to(self.device)#[bs,seq_l]
             target_item = batch_data['item_id'].to(self.device)#[bs]
             self.optimizer.zero_grad()#上一批次梯度清零
-            loss_total, loss_ce, loss_cl = self.model.calculate_loss(history_seq, target_item, stage=stage)
+            loss_total, loss_ce, loss_cl = self.model.calculate_loss(
+                history_seq,
+                target_item,
+                stage=stage
+            )
             loss_total.backward()
             self.optimizer.step()# 根据当前梯度更新模型参数
             self.scheduler.step()# 正常更新学习率
@@ -233,29 +248,6 @@ class AMPTrainer:
                 #每层的使用率 平均使用率；冲突率；
         return codebook_metrics
 
-
-    def _init_user_history_dict(self):
-        """
-        从数据集上构建用户交互历史（包含target_item)
-        """
-        self.user_history_dict = {}
-        dataset = self.train_dataloader.dataset
-        users = dataset.inter_feat['user_id'].cpu().numpy()
-        item_seqs = dataset.inter_feat['item_id_list'].cpu().numpy()
-        targets = dataset.inter_feat['item_id'].cpu().numpy()
-
-        for u, seq, tgt in zip(users, item_seqs, targets):
-            if u not in self.user_history_dict:
-                self.user_history_dict[u] = set()
-
-            self.user_history_dict[u].update(seq)#将该条样本中的历史序列所有 item 加入集合
-            self.user_history_dict[u].add(tgt)
-
-        for u in self.user_history_dict:
-            if 0 in self.user_history_dict[u]:#去掉padding
-                self.user_history_dict[u].remove(0)
-
-
     def valid_epoch(self, epoch_idx: int):
         '''
         从验证集中取出每批数据，进行推理得到预测结果；
@@ -265,41 +257,18 @@ class AMPTrainer:
         if self.valid_dataloader is None:
             return 0.0, {}
 
-        if hasattr(self.model, 'infer_engine') and hasattr(self.model.infer_engine, 'invalidate_trie_cache'):
-            self.model.infer_engine.invalidate_trie_cache() #验证前主动清空 trie 缓存，避免使用过期 SID 映射
+        recbole_config = getattr(self.valid_dataloader, "config", None)
+        if recbole_config is not None:
+            metrics = evaluate_fullsort_recbole(
+                self.model,
+                self.valid_dataloader,
+                recbole_config,
+                self.device,
+            )
+            codebook_metrics = self._check_codebook_health()
+            return float(metrics[f'ndcg@{self.val_k}']), codebook_metrics
 
-        all_preds, all_targets = [], []
-        progress_bar = tqdm(self.valid_dataloader, desc=f"Valid Epoch {epoch_idx}", leave=False,disable=True)
-
-        with torch.no_grad():
-            for step, batch_tuple in enumerate(progress_bar):
-                batch_data = batch_tuple[0]
-                history_seq = batch_data['item_id_list'].to(self.device)
-                target_item = batch_data['item_id'].to(self.device)
-                user_ids = batch_data['user_id'].cpu().numpy()
-
-                batch_full_history = []#取出对应的 用户全量历史
-                for uid in user_ids:
-                    uid_history = list(self.user_history_dict.get(int(uid), set()))
-                    batch_full_history.append(uid_history)
-
-                topk_preds, _ = self.model.predict_topk(
-                    history_seq,
-                    top_k=self.val_k,
-                    full_history_list=batch_full_history
-                )#[bs,top-k]
-
-                all_preds.append(topk_preds.cpu())
-                all_targets.append(target_item.cpu())
-
-        all_preds_tensor = torch.cat(all_preds, dim=0)#[num_item,top-k]
-        all_targets_tensor = torch.cat(all_targets, dim=0)
-
-        metrics = self.evaluator.evaluate_ranking(all_preds_tensor, all_targets_tensor)
-        codebook_metrics = self._check_codebook_health()
-
-        return metrics[f'NDCG@{self.val_k}'], codebook_metrics
-        # 返回验证 NDCG@K 和 codebook 指标字典
+        raise RuntimeError("Validation requires a RecBole dataloader with full-sort config.")
 
 
     def train(self):
@@ -433,7 +402,15 @@ class AMPTrainer:
                 if improved:
                     best_valid_score = valid_ndcg
                     patience_counter = 0#早停计数器清0
-                    torch.save(self.model.state_dict(), self.best_model_path)
+                    torch.save(
+                        {
+                            "state_dict": self.model.state_dict(),
+                            "item_loss_weight": float(
+                                getattr(self.model.engine, "item_loss_weight", 0.0)
+                            ),
+                        },
+                        self.best_model_path,
+                    )
                     log_str += f" --> [Best Model Saved!]"
                     if not is_healthy:
                         log_str += " [Warning: codebook unhealthy]"

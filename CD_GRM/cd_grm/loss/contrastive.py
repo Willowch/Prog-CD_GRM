@@ -5,15 +5,14 @@ import torch.nn.functional as F
 
 class InfoNCELoss(nn.Module):
     """
-
+    计算对比损失
     """
-
     def __init__(self, temperature: float = 0.1):
         super(InfoNCELoss, self).__init__()
         self.temperature = temperature
 
     def forward(self, z_a: torch.Tensor, z_b: torch.Tensor) -> torch.Tensor:
-
+        #z_a,z_b:[bs,emb_size]
         batch_size = z_a.shape[0]
         device = z_a.device
 
