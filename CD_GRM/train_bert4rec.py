@@ -31,6 +31,7 @@ def resolve_bert4rec_config_path(config_arg: str) -> Path:
 
     config_map = {
         "all_beauty": Path("CD_GRM/config/bert4rec_all_beauty.yaml"),
+        "sports_and_outdoors": Path("CD_GRM/config/bert4rec_sports_and_outdoors.yaml"),
     }
 
     key = config_arg.strip().lower()

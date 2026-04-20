@@ -1,0 +1,230 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>图协同增强的离散去噪生成式序列推荐：论文初稿</title>
+<style>
+body { font-family: "SimSun", "宋体", serif; font-size: 10.5pt; line-height: 1.45; margin: 36pt 42pt; color: #111; }
+h1 { font-family: "SimHei", "黑体", sans-serif; font-size: 16pt; text-align: center; margin: 18pt 0 10pt; }
+h2 { font-family: "SimHei", "黑体", sans-serif; font-size: 14pt; margin: 18pt 0 8pt; border-bottom: 1px solid #999; padding-bottom: 3pt; }
+h3 { font-family: "SimHei", "黑体", sans-serif; font-size: 12pt; margin: 12pt 0 6pt; }
+h4 { font-family: "SimHei", "黑体", sans-serif; font-size: 11pt; margin: 10pt 0 4pt; }
+p { text-indent: 2em; margin: 5pt 0; }
+.center { text-align: center; text-indent: 0; }
+.note { color: #333; background: #f6f6f6; border-left: 3px solid #999; padding: 6pt 8pt; text-indent: 0; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0 12pt; font-size: 9.5pt; }
+caption { font-weight: bold; margin-bottom: 4pt; }
+th, td { border: 1px solid #555; padding: 4pt 5pt; text-align: center; vertical-align: middle; }
+th { background: #efefef; }
+li { margin: 3pt 0; }
+.ref p { text-indent: 0; }
+</style>
+</head>
+<body>
+
+<h1>图协同增强的离散去噪生成式序列推荐：论文初稿</h1>
+<p class="center">基于当前 CD-GRM 项目代码与 All_Beauty 实验结果撰写，2026-04-20</p>
+
+<h2>写作前说明：代码实现、实验状态与论文定位</h2>
+<p>本文档先给出基于代码的论文映射与审稿风险判断，再给出中文论文初稿。所有方法描述均以当前项目真实实现为依据；没有在代码中实现的模块，例如 Trie 约束解码、valid SID pool 过滤、语义 ID 到 item 的直接反查召回，不写成已实现贡献。</p>
+<p>当前已完成并可追溯的主实验范围为 All_Beauty 数据集。Sports_and_Outdoors 与 Toys_and_Games 当前工作区仅有 zip 文件，尚未解出标准 .inter 文件，因此未纳入本轮主实验。当前主实验采用 RecBole 的 leave-one-out 验证/测试划分与 full-sort 评测。</p>
+<p>最重要的实验事实是：CD-GRM 在验证集上取得当前最高 NDCG@10，但在测试集 NDCG@10 上略低于 SASRec。因此论文不能宣称全面优于强序列推荐模型，更适合定位为“方法改进型 + 结构组合型”工作：核心价值是将语义 ID 掩码去噪、图协同视图和合法 item 排序头组合为一个可训练框架，并分析其在生成式推荐中的合理性与局限。</p>
+
+<h3>代码到论文的结构化映射</h3>
+<table>
+<caption>表 1  代码实现到论文叙事的映射</caption>
+<tr><th>问题</th><th>代码中的真实实现</th><th>论文中可上升的表述</th><th>表述强度</th></tr>
+<tr><td>研究任务</td><td>RecBole 序列推荐：输入 item_id_list，预测下一 item_id；full_sort_predict 输出全 item 分数。</td><td>下一物品序列推荐，生成目标以 item 的离散语义 ID 为中间表示。</td><td>强</td></tr>
+<tr><td>语义 ID</td><td>ResidualQuantizer 对 target item embedding 逐层残差量化，得到 M 个 code；code +1 后作为 SID token。</td><td>用残差量化构造 item 的多 token 离散语义表示。</td><td>强</td></tr>
+<tr><td>离散去噪</td><td>CosineMaskScheduler 随机 mask SID；DenoisingTransformer 预测 masked SID token。</td><td>以掩码离散去噪替代严格左到右的 SID 生成训练。</td><td>中强</td></tr>
+<tr><td>并行推理</td><td>从全 MASK SID 开始，多步并行预测 token；低置信 token 继续 mask；最终取 target_latent 做 item ranking。</td><td>采用并行 refinement 风格的离散去噪推理，缓解自回归串行依赖。</td><td>中强</td></tr>
+<tr><td>图协同视图</td><td>GraphViewBuilder 从训练序列构建时间衰减 item 共现图，并采样随机游走视图。</td><td>用序列共现图视图为语义表示注入协同过滤信号。</td><td>强</td></tr>
+<tr><td>对比学习</td><td>InfoNCE 对齐量化目标表示/去噪表示与图视图表示。</td><td>通过图视图对比约束增强语义 ID 表示和目标 latent 的协同一致性。</td><td>中强</td></tr>
+<tr><td>合法 item 输出</td><td>最终通过 item embedding 全量点积与 graph prior 得到 item logits，PAD 置为 -inf。</td><td>通过 item-level full-sort 排序头避免输出非法 item。不是 Trie/SID pool 约束解码。</td><td>强但需克制</td></tr>
+<tr><td>训练技巧</td><td>两阶段训练、EMA codebook、dead-code restart、uncertainty weighting、cosine LR。</td><td>稳定训练的实现细节和工程增强。</td><td>弱，不宜作为主贡献</td></tr>
+</table>
+
+<h3>核心贡献与非贡献边界</h3>
+<p>可以作为核心贡献表述的内容包括三点。第一，模型将下一物品预测分解为 item embedding 的残差量化、语义 ID 掩码去噪和 item-level 排序三个环节，使生成式推荐不必完全依赖自回归 SID 生成。第二，模型利用时间衰减 item 共现图构造图视图，通过 InfoNCE 约束量化表示和去噪 latent，使稀疏交互下的协同信号能够进入生成过程。第三，模型在推理阶段使用去噪 latent、历史序列表示和图上下文进行合法 item 空间上的 full-sort 排序，降低无效语义 token 组合直接转化为非法 item 的风险。</p>
+<p>不宜作为核心创新夸大的内容包括：普通 Transformer 编码器、EMA 更新 codebook、学习率 warmup/cosine schedule、早停、Optuna 调参、PAD/MASK token 屏蔽、日志与评测封装。这些是必要实现或训练技巧，不构成生成式推荐方法层面的独立贡献。</p>
+
+<h3>当前实验结果汇总</h3>
+<p>所有结果均来自当前工作区可追溯运行。模型选择遵循验证集 NDCG@10 最优原则，然后报告对应测试集指标。CD-GRM trial 17 是当前 Optuna study 中验证集最优的完整 trial；trial 18 也已完成，但验证集略低。</p>
+<table>
+<caption>表 2  All_Beauty 验证集结果</caption>
+<tr><th>模型</th><th>Valid R@5</th><th>Valid R@10</th><th>Valid R@20</th><th>Valid N@5</th><th>Valid N@10</th><th>Valid N@20</th></tr>
+<tr><td>DiffRec</td><td>0.0252</td><td>0.0464</td><td>0.0696</td><td>0.0181</td><td>0.0247</td><td>0.0305</td></tr>
+<tr><td>BERT4Rec</td><td>0.7780</td><td>0.8285</td><td>0.9768</td><td>0.7764</td><td>0.7928</td><td>0.8307</td></tr>
+<tr><td>SASRec</td><td>0.9748</td><td>0.9788</td><td>0.9849</td><td>0.9027</td><td>0.9040</td><td>0.9055</td></tr>
+<tr><td>CD-GRM</td><td>0.9707</td><td>0.9768</td><td>0.9808</td><td>0.9059</td><td>0.9077</td><td>0.9087</td></tr>
+</table>
+<table>
+<caption>表 3  All_Beauty 测试集结果（按验证集最优 checkpoint 报告）</caption>
+<tr><th>模型</th><th>Test R@5</th><th>Test R@10</th><th>Test R@20</th><th>Test N@5</th><th>Test N@10</th><th>Test N@20</th></tr>
+<tr><td>DiffRec</td><td>0.0283</td><td>0.0595</td><td>0.1261</td><td>0.0197</td><td>0.0293</td><td>0.0462</td></tr>
+<tr><td>BERT4Rec</td><td>0.4016</td><td>0.4379</td><td>0.8285</td><td>0.3938</td><td>0.4051</td><td>0.5048</td></tr>
+<tr><td>SASRec</td><td>0.8355</td><td>0.8466</td><td>0.8496</td><td>0.6796</td><td>0.6833</td><td>0.6841</td></tr>
+<tr><td>CD-GRM</td><td>0.8345</td><td>0.8375</td><td>0.8436</td><td>0.6774</td><td>0.6784</td><td>0.6799</td></tr>
+</table>
+<p>从表 2 与表 3 可以看出，CD-GRM 的验证集排序质量略高于 SASRec，但测试集略低于 SASRec。这说明当前方法在该小规模稀疏数据集上具有竞争力，但还不能支持“显著优于强判别式序列模型”的结论。</p>
+
+<h2>正式论文初稿</h2>
+<h3>候选标题</h3>
+<ol>
+<li>图协同增强的离散去噪生成式序列推荐</li>
+<li>面向语义 ID 序列推荐的图感知掩码去噪生成框架</li>
+<li>协同图视图增强的语义 ID 去噪推荐模型</li>
+<li>从语义 ID 到合法物品排序：一种图增强离散去噪序列推荐方法</li>
+<li>Graph-Enhanced Discrete Denoising for Semantic-ID Sequential Recommendation</li>
+</ol>
+
+<h3>摘要</h3>
+<p>生成式推荐试图将物品推荐转化为 token 生成或语义标识生成问题，从而为统一建模、开放词表式检索和端到端候选生成提供新的技术路径。然而，现有基于语义 ID 的生成式推荐通常面临三个相互关联的问题：其一，自回归式语义 ID 生成存在严格的左到右依赖，推理效率受限并可能产生误差累积；其二，稀疏交互场景下，仅依赖目标语义 token 的局部重建难以充分利用 item-item 协同结构；其三，离散 token 组合未必对应真实物品，生成式解码容易引入非法 item 或语义不一致候选。</p>
+<p>为缓解上述问题，本文提出一种图协同增强的离散去噪生成式序列推荐框架 CD-GRM。该方法首先通过残差量化将物品 embedding 映射为多层离散语义 ID；随后采用余弦 mask 调度构造语义 ID 的掩码去噪任务，使模型并行恢复目标 item 的离散语义 token；同时，模型从用户序列构建时间衰减 item 共现图，利用随机游走图视图和 InfoNCE 对比目标将协同信号注入语义表示；在推理阶段，模型基于并行去噪得到的目标 latent、历史序列表示和图上下文进行 item-level full-sort 排序，从而避免直接输出非法语义 ID 组合。</p>
+<p>在 All_Beauty 数据集上的当前实验显示，CD-GRM 在验证集 NDCG@10 上达到 0.9077，高于本轮复现实验中的 SASRec、BERT4Rec 和 DiffRec；在测试集上，CD-GRM 的 NDCG@10 为 0.6784，略低于 SASRec 的 0.6833，但明显高于 BERT4Rec 和 DiffRec。该结果表明本文方法具有竞争力，但仍需要在更多公开数据集和生成式 baseline 上进一步验证。本文的贡献在于提出并实现了一个以语义 ID 掩码去噪为中心、由图协同视图和合法 item 排序约束增强的生成式序列推荐框架，并系统讨论其优势、局限与后续改进方向。</p>
+<p class="note">中文说明：摘要按“背景—问题—方法—当前实验—贡献”展开，并主动降低结论强度。由于测试集上 CD-GRM 没有超过 SASRec，摘要不能写成全面领先，只能写成验证集表现较好、测试集具有竞争力。</p>
+
+<h3>1 引言</h3>
+<p>序列推荐旨在根据用户按时间排序的历史交互预测其下一步可能感兴趣的物品，是推荐系统召回与排序阶段的重要基础任务。传统序列推荐模型通常将物品视为离散 ID，通过循环神经网络、卷积网络或自注意力网络编码用户历史，再在候选物品集合上进行匹配和排序。以 SASRec 为代表的自注意力模型显著增强了长程依赖建模能力；以 BERT4Rec 为代表的双向掩码建模方法则借鉴语言模型中的 cloze objective，学习更丰富的序列上下文表示。</p>
+<p>近年来，生成式推荐将推荐问题进一步转化为文本生成、物品 token 生成或语义 ID 生成问题。此类方法的一个关键动机是：若物品可以表示为具有语义结构的离散 token 序列，推荐模型便不再只是对固定物品 ID 做判别式分类，而可以在语义空间中组合、生成和检索候选物品。TIGER 等工作表明，基于语义 ID 的生成式检索能够为推荐系统提供新的候选生成范式；P5 等统一预训练框架也显示了将推荐任务语言化的潜力。</p>
+<p>然而，将生成式方法直接用于序列推荐仍存在若干挑战。第一，许多语义 ID 生成方法采用自回归解码，必须从左到右逐 token 生成目标物品标识。该机制与自然语言生成相似，但在推荐中可能带来串行推理开销，并且早期 token 错误会影响后续 token 预测。第二，语义 ID 的学习若只依赖 item embedding 或局部重建目标，可能不足以捕获稀疏交互数据中的协同过滤结构。第三，生成模型输出的 token 组合未必对应真实物品；若没有合法性约束或 item-level 校验，模型可能生成无效候选。</p>
+<p>本文围绕“如何在语义 ID 推荐中同时缓解自回归依赖、协同信号不足和非法生成风险”这一问题展开。我们提出 CD-GRM，一个图协同增强的离散去噪生成式序列推荐框架。与严格自回归生成不同，CD-GRM 对目标物品的多层语义 ID 进行随机 mask，并训练 Transformer 在用户历史条件下并行恢复被 mask 的语义 token。与只依赖语义 token 重建的模型不同，CD-GRM 从用户序列中构建时间衰减 item 共现图，通过随机游走图视图和对比学习将协同结构注入目标表示。与直接把生成的 token 序列映射为物品不同，CD-GRM 在推理阶段使用去噪 latent、序列表示和图上下文进行合法 item 空间上的 full-sort 排序。</p>
+<p>本文的主要贡献如下。第一，提出一种面向语义 ID 序列推荐的掩码离散去噪框架，以并行恢复目标语义 token 的方式降低对自回归顺序生成的依赖。第二，设计图协同视图增强机制，通过时间衰减 item 共现图、随机游走视图和 InfoNCE 对比目标，为语义 ID 与去噪 latent 注入协同过滤信号。第三，在推理阶段引入序列—语义—图融合排序头和 target-aware graph prior，使模型最终在合法 item 集合上输出排序分数，降低无效语义 token 组合带来的风险。第四，基于 All_Beauty 的当前实验和审稿视角分析，给出该方法的优势、边界与后续必须补充的实验方向。</p>
+<p>本文其余部分组织如下。第 2 节回顾序列推荐、生成式推荐、语义 ID 推荐、扩散式推荐和图/对比增强推荐。第 3 节给出 CD-GRM 的任务定义和方法细节。第 4 节报告实验设置与当前结果。第 5 节讨论方法有效性、适用场景和局限性。第 6 节总结全文。</p>
+<p class="note">中文说明：引言没有把所有模块平铺，而是围绕三个问题组织：自回归依赖、协同信号不足、非法生成风险。由于代码最终用 item-level ranker 而不是 Trie 约束，所以第三个问题表述为“降低非法组合风险”，而不是“严格约束解码”。</p>
+
+<h3>2 相关工作</h3>
+<h4>2.1 序列推荐</h4>
+<p>序列推荐通过用户历史交互建模偏好动态。早期方法常采用 Markov chain、RNN 或 CNN 建模短期兴趣，随后自注意力机制成为主流。SASRec 使用 Transformer 的因果自注意力结构编码历史序列，在下一物品预测中取得了强性能。BERT4Rec 则使用双向 Transformer 和掩码物品预测目标学习序列表示。本文方法与这类判别式序列模型共享“编码历史并预测下一物品”的任务设置，但区别在于 CD-GRM 引入了目标物品的离散语义 ID 去噪过程，并将生成式中间表示用于 item-level 排序。</p>
+<h4>2.2 生成式推荐</h4>
+<p>生成式推荐将推荐任务转化为序列生成、文本生成或候选标识生成。P5 将多种推荐任务统一为自然语言 prompt 下的生成任务；TIGER 进一步使用语义 ID 表示物品，并通过生成语义 ID 完成推荐检索。这类方法的优势在于能够统一任务形式并利用生成模型的表达能力，但也引入解码效率、token 组合合法性和语义 ID 质量依赖等问题。本文并不直接实现大语言模型式生成，而是面向序列推荐设计轻量的离散语义 ID 去噪模块。</p>
+<h4>2.3 语义 ID 与生成式检索</h4>
+<p>语义 ID 方法通常先将物品映射为若干离散 token，再训练模型生成这些 token。离散语义 ID 可以缓解 item ID 缺乏结构的问题，并为生成式召回提供可组合空间。然而，语义 ID 的质量强依赖 tokenizer 或 quantizer；若不同物品共享相同 ID 序列，或生成 token 组合不在真实物品集合中，推荐结果会受到影响。CD-GRM 使用残差量化得到多层 semantic ID，并在训练中监控 codebook active rate 与 collision rate；但当前实现仍存在 SID 碰撞，因此论文中不能将语义 ID 描述为完全一一对应的物品编码。</p>
+<h4>2.4 扩散式推荐与离散去噪</h4>
+<p>DiffRec 等扩散推荐方法将推荐建模为从噪声状态逐步恢复用户偏好分布的过程，为生成式推荐提供了非自回归或逐步细化的替代思路。与连续扩散模型不同，本文方法处理的是离散语义 ID token：训练阶段通过 mask schedule 随机遮蔽目标 SID token，推理阶段从全 mask 状态开始逐步恢复 token 表示。因此，CD-GRM 更接近 masked discrete denoising 或 mask-predict 式 refinement，而不是标准高斯扩散模型。论文中应避免把该方法称作完整的概率扩散模型。</p>
+<h4>2.5 图增强与对比学习推荐</h4>
+<p>图推荐方法通过用户—物品图或 item-item 图传播协同信号，LightGCN、SGL 等工作表明图结构和自监督对比学习能够增强推荐表示。序列推荐中，item 共现图也可捕获短程转移和协同邻域。CD-GRM 从训练序列构建时间衰减 item 共现图，并通过随机游走图视图与目标表示进行 InfoNCE 对齐。该设计的目的不是替代序列编码器，而是在稀疏场景下为语义 ID 去噪提供额外协同约束。</p>
+<p class="note">中文说明：相关工作每节最后都自然引出本文方法，而不是堆砌文献。对 DiffRec 的关系尤其要谨慎：当前代码是离散 mask 去噪，不是严格 DDPM。</p>
+
+<h3>3 方法</h3>
+<h4>3.1 任务定义与符号</h4>
+<p>设物品集合为 I，用户 u 的历史交互序列为 S_u = (i_1, i_2, ..., i_L)，目标是预测下一物品 i_{L+1}。模型输入为长度截断后的历史序列 x = [i_1, ..., i_L]，输出为所有候选物品上的分数 s(u, i)，并根据分数进行 full-sort 排序。</p>
+<p>每个物品 i 对应一个可学习 embedding e_i ∈ R^d。CD-GRM 进一步将 e_i 量化为 M 层离散语义 token z_i = (z_i^1, ..., z_i^M)，其中每个 token 来自大小为 K 的 codebook。代码中 PAD token 为 0，真实 code 通过 +1 映射到 1...K，MASK token 为 K+1。</p>
+<h4>3.2 总体框架</h4>
+<p>CD-GRM 包含六个核心模块：共享 item embedding、残差量化器、mask/noise scheduler、去噪 Transformer、图视图构建器、序列—语义—图融合排序头。训练分为两个阶段。第一阶段主要学习 item embedding 与残差量化 codebook，并用图视图对比目标增强量化表示。第二阶段冻结量化器，训练去噪 Transformer 和排序头，使模型能够在历史序列条件下恢复目标语义 ID，并将去噪 latent 转换为合法 item 排序分数。</p>
+<h4>3.3 物品语义 ID 表示</h4>
+<p>为解决原始 item ID 缺乏结构的问题，CD-GRM 使用 ResidualQuantizer 对目标物品 embedding 进行逐层残差量化。第 m 层量化器从 codebook C_m 中选择与当前残差最近的 code 向量，并将该 code 向量累加到量化输出，同时更新残差。经过 M 层后，物品被表示为 M 个离散 code。</p>
+<p>量化器采用 EMA 更新 codebook，并实现 dead-code restart：若某些 code 长期低频使用，则用当前 batch 中的残差向量重新初始化。该机制有助于避免 codebook collapse，但它更适合写作中作为训练稳定性设计，而不是核心方法贡献。当前最佳 trial 的 codebook collision rate 仍约为 0.42 左右，说明语义 ID 并非完全无碰撞。</p>
+<p>[公式草稿] q_i, z_i, L_commit = RQ(e_i); z_i ∈ {1,...,K}^M。</p>
+<h4>3.4 掩码离散去噪过程</h4>
+<p>为缓解自回归语义 ID 生成的串行依赖，CD-GRM 将目标语义 ID 的预测建模为 masked denoising。给定目标 SID z_i，调度器随机采样时间步 t，并根据余弦保留率 alpha_bar_t 决定每个 token 是否被 mask。代码中还强制每个样本至少有一个 token 被 mask，以保证语义 CE 有有效训练位置。</p>
+<p>去噪 Transformer 的输入由历史 item embedding 与 masked SID embedding 拼接而成。Transformer Encoder 输出目标 SID 位置的 hidden states，并通过 prediction head 预测每个语义 token 的分类 logits。训练时仅在被 mask 的位置上计算交叉熵。</p>
+<p>[公式草稿] L_SID = - sum_{m in M_mask} log p_theta(z_i^m | x, masked(z_i), t)。</p>
+<h4>3.5 图视图构建与协同增强</h4>
+<p>仅依赖目标语义 ID 的去噪可能不足以捕获稀疏交互中的协同结构。CD-GRM 因此从训练数据构建 item-item 时间共现图。对每个用户序列，模型在滑动窗口内统计从当前 item 到后续 item 的转移强度，并使用 1/k 的位置衰减降低远距离共现的权重。每个 item 仅保留得分最高的 max_degree 个邻居，并将边权归一化为转移概率。</p>
+<p>在训练中，GraphViewBuilder 从目标 item 出发进行随机游走，得到长度为 M 的图视图序列。该图视图的 item embedding 平均池化后形成 z_b，用于和量化表示或去噪 latent 进行 InfoNCE 对齐。该设计把“目标物品在交互图中的局部协同邻域”作为自监督信号，引导语义表示不仅重建 item embedding，也保留协同结构。</p>
+<p>[公式草稿] L_CL = - log exp(sim(h_i, g_i)/tau) / sum_j exp(sim(h_i, g_j)/tau)，并采用双向 InfoNCE。</p>
+<h4>3.6 序列—语义—图融合排序头</h4>
+<p>为把生成式中间表示转化为可用于推荐的合法 item 排序，CD-GRM 实现了 SeqGraphFusionRanker。该模块首先用因果 Transformer 编码历史序列，取最后一个有效位置作为序列上下文；随后用 seq_context、semantic_context 和 graph_context 构造 target-aware query，对历史位置进行重读和加权池化；最后通过门控机制融合序列上下文、语义上下文和图上下文，得到 fused_context。</p>
+<p>item logits 由 fused_context 与所有 item embedding 点积得到。由于输出空间是已有 item vocabulary，模型不会直接输出不存在的物品 ID。代码中同时将 PAD item 分数置为负无穷。需要强调的是，这不是语义 ID Trie 约束解码，而是通过 item-level ranker 在合法 item 集合上做最终选择。</p>
+<h4>3.7 图先验排序分数</h4>
+<p>除融合排序头外，CD-GRM 还实现了 graph prior。模型根据历史 item 的图邻居构造候选 item 的先验分数，并将其加到 item logits 中。历史位置权重可由 recency 决定，也可在 target-aware 模式下由去噪 target latent 与历史 embedding 的相似度共同决定。代码还支持二跳邻居、历史重复项和最近 item boost。</p>
+<p>该模块的合理性在于，下一物品往往与近期历史 item 的局部转移邻域相关；图先验可把这一短程协同规律显式注入 item-level 排序。但该模块也可能被审稿人视为启发式后处理，因此论文中应通过消融验证其必要性。</p>
+<h4>3.8 总训练目标</h4>
+<p>第一阶段目标为量化表示与图视图的对比损失加 commitment loss。第二阶段目标包括 masked SID 交叉熵、去噪 latent 与图视图的对比损失、commitment loss，以及可选的 item-level 交叉熵。当前配置中 item_loss_weight=2.0，因此 item-level CE 是实际训练的重要组成部分。第二阶段中 CE、CL 和 commitment loss 通过可学习 log variance 进行 uncertainty weighting，再乘以 stage2_aux_loss_weight；item loss 以固定权重加入。</p>
+<p>[公式草稿] L = lambda_sid L_SID + lambda_cl L_CL + lambda_commit L_commit + lambda_item L_item，其中前三项在代码中由 log_vars 自适应加权。</p>
+<h4>3.9 推理流程与复杂度讨论</h4>
+<p>推理时，模型从全 MASK 的 SID 序列开始，按时间步反向执行并行去噪。每一步同时预测所有 SID token 的分布，并根据最大概率保留高置信 token，将低置信 token 继续置为 MASK。最后一步得到 target_latent，输入 item-level ranker 得到全量 item 分数。</p>
+<p>相较自回归逐 token 生成，CD-GRM 的每一步可以并行预测 M 个语义 token，但需要执行 T 个去噪步；当前配置 T=20、M=2，因此语义去噪开销可控。最终 full-sort 的复杂度为 O(Vd)，适合当前小规模数据集；若扩展到百万级 item，仍需要近似最近邻检索、候选裁剪或分层召回来降低推理成本。</p>
+<p class="note">中文说明：方法部分先解释每个模块解决什么问题，再写怎么做。特别注意 item_loss_weight=2.0，这意味着最终性能很大程度依赖 item-level ranker；论文不能把性能全部归因于纯 SID 生成。</p>
+
+<h3>4 实验</h3>
+<h4>4.1 数据集与评测协议</h4>
+<p>当前实验在 All_Beauty 数据集上进行。RecBole 构建后的统计信息为：用户数 992，物品数 86，交互数 5269，平均每用户交互数约 5.32，数据稀疏度约 93.82%。所有模型采用按时间排序的 leave-one-out 风格划分，验证集和测试集均使用 full-sort 评测。</p>
+<p>评价指标包括 Recall@5/10/20 与 NDCG@5/10/20。模型选择遵循验证集 NDCG@10 最优原则，再报告该 checkpoint 在测试集上的结果。该协议避免直接根据测试集挑选模型。</p>
+<h4>4.2 Baselines</h4>
+<p>当前已复现实验包含三个 baseline。SASRec 是强自注意力序列推荐模型；BERT4Rec 是双向掩码序列推荐模型；DiffRec 是扩散式推荐 baseline。当前尚未纳入 TIGER、P5、生成式语义 ID 检索等更直接的生成式 baseline，这是后续补实验的高优先级工作。</p>
+<h4>4.3 实现细节</h4>
+<p>CD-GRM 使用 embed_dim=128、m_layers=2、codebook_size=32、diffusion_steps=20、Transformer 层数 2、attention head 数 4。图构建使用 graph_window_size=6，当前最佳 trial 的 max_degree=5，stage1_epochs=12，tau=0.0826，batch size=64，learning rate=4.046e-4，weight decay=1.86e-3。推理阶段采用 item-level full-sort。</p>
+<p>SASRec 使用 hidden_size=128、n_layers=2、n_heads=4、dropout=0.2，训练 100 epochs 并早停。BERT4Rec 使用 hidden_size=64、n_layers=2、n_heads=1、mask_ratio=0.6、MAX_ITEM_LIST_LENGTH=20。DiffRec 使用官方风格的 linear-var noise schedule、steps=5、dims_dnn=[200]。</p>
+<h4>4.4 主结果</h4>
+<p>主结果见表 2 与表 3。验证集上，CD-GRM 的 NDCG@10 为 0.9077，略高于 SASRec 的 0.9040；测试集上，SASRec 的 NDCG@10 为 0.6833，略高于 CD-GRM 的 0.6784。BERT4Rec 与 DiffRec 在当前配置下明显低于 SASRec 和 CD-GRM。</p>
+<p>该结果说明，CD-GRM 的图增强离散去噪框架能够取得与强序列模型接近的效果，但测试集优势尚不稳定。若以严格审稿标准判断，当前主实验不足以支持“新方法显著优于已有强模型”的结论；更合理的结论是 CD-GRM 在验证集上展示出潜力，在测试集上达到与 SASRec 接近的竞争性结果。</p>
+<h4>4.5 消融实验计划</h4>
+<p>当前尚未完成系统消融，正式论文必须补充以下实验：去除图视图对比学习、去除 graph prior、去除 SeqGraphFusionRanker、去除 item-level CE、调整 diffusion_steps、调整 codebook_size 与 m_layers、关闭 target-aware graph prior、比较是否冻结 quantizer。每个消融均应按验证集选择 checkpoint 后报告测试集。</p>
+<h4>4.6 非法生成与合法性分析计划</h4>
+<p>由于当前实现最终使用 item-level ranker 输出合法 item 分数，而不是直接把 SID 序列反查为物品，因此非法 SID 率不能直接等价于最终非法 item 率。后续可增加两类分析：第一，统计并行去噪最终预测 SID 是否落入训练物品 SID pool；第二，比较“直接 SID 最近匹配/反查”与“item-level ranker”的有效性和非法率。</p>
+<h4>4.7 效率分析计划</h4>
+<p>正式论文还应报告训练时间、推理时间、参数量和 full-sort latency。特别需要比较 CD-GRM 的 T 步并行去噪与 SASRec 一次前向排序的开销，以回答生成式中间过程是否带来可接受的收益。</p>
+<p class="note">中文说明：实验部分明确把已跑结果和待补实验分开。当前结果不能硬写成全面领先，所以用“竞争性”和“潜力”而不是“SOTA”。</p>
+
+<h3>5 讨论</h3>
+<h4>5.1 方法可能有效的原因</h4>
+<p>CD-GRM 的有效性来自三个因素的组合。首先，残差量化把 item embedding 压缩为多层离散 token，使目标预测不再只是单个 item ID 分类，而具有生成式中间结构。其次，图视图对比学习和 graph prior 将 item-item 转移关系显式注入模型，有助于小规模稀疏数据上的协同信号恢复。最后，item-level ranker 避免了生成式 token 组合无法映射到合法 item 的直接风险，使模型在推荐评测中保持合法输出。</p>
+<h4>5.2 与自回归生成式推荐的差异</h4>
+<p>自回归语义 ID 推荐通常逐 token 生成目标标识，并依赖 beam search 或 constrained decoding 获得候选。CD-GRM 则使用 mask denoising 并行预测多个 SID token，在训练上更接近 BERT 式 masked modeling，在推理上更接近逐步 refinement。该设计的优势是降低 token 顺序依赖；不足是仍需多步去噪，且当前实现没有直接输出 SID 候选，而是使用 latent 进行 item ranking。</p>
+<h4>5.3 与判别式序列推荐的取舍</h4>
+<p>与 SASRec 相比，CD-GRM 引入了语义 ID、图视图、对比学习和多步去噪，模型结构更复杂。当前 All_Beauty 测试结果中，CD-GRM 略低于 SASRec，说明复杂结构并不自动带来稳定收益。本文方法的价值更可能体现在需要生成式语义表示、需要图协同增强、或需要研究 tokenized recommendation 的场景，而不是直接替代高效判别式序列模型。</p>
+<h4>5.4 工程落地可行性</h4>
+<p>当前实现适合中小规模 full-sort 实验。若部署到真实召回系统，主要瓶颈包括：T 步去噪带来的前向开销、全 item 点积排序的 O(Vd) 成本、图构建和图先验在大规模 item 图上的存储成本。可行的工程方向包括离线构建 ANN 索引、只对召回候选集加 graph prior、减少 diffusion_steps、蒸馏为单步 ranker，以及用分层语义 ID 做粗到细召回。</p>
+<h4>5.5 局限性</h4>
+<p>本文当前局限性包括：第一，语义 ID 质量依赖残差量化器，且当前 codebook 仍存在碰撞；第二，实验只覆盖 All_Beauty，数据规模较小，结论外推能力有限；第三，缺少 TIGER、P5 等更直接生成式 baseline；第四，缺少系统消融，无法定量证明每个模块的贡献；第五，最终推荐强依赖 item-level ranker，因此方法是否真正实现了语义 ID 生成式召回仍需进一步验证。</p>
+
+<h3>6 结论</h3>
+<p>本文提出 CD-GRM，一种图协同增强的离散去噪生成式序列推荐框架。该方法通过残差量化构造物品语义 ID，通过掩码离散去噪建模目标语义 token，并通过图视图对比学习和序列—语义—图融合排序头增强协同信号与合法 item 输出。在 All_Beauty 上，CD-GRM 在验证集上取得当前最高 NDCG@10，在测试集上达到与 SASRec 接近但略低的表现。当前结果显示该方向具有研究潜力，但尚不足以支持全面优于强序列推荐模型的结论。未来工作应补充多数据集、多生成式 baseline、消融、非法生成分析与效率评估，以更严格地验证该框架的实际价值。</p>
+
+<h2>附录 A：创新性分析</h2>
+<p>相对已有生成式推荐论文，CD-GRM 的新意不在于首次提出语义 ID，也不在于使用大语言模型生成推荐，而在于把语义 ID 预测改写为离散掩码去噪，并用图协同视图增强去噪目标表示。相对扩散式推荐，CD-GRM 处理的是离散 SID token，而不是连续用户偏好向量，因此应定位为 masked discrete denoising。相对语义 ID 生成范式，CD-GRM 的关键区别是最终使用合法 item full-sort ranker，而不是直接将生成 SID 作为最终推荐结果。</p>
+<p>最值得在摘要、引言和贡献中强调的点是：并行掩码去噪替代严格自回归 SID 生成；图视图对比学习为语义 ID 注入协同信号；item-level ranker 降低非法生成风险。最不建议硬吹的点是：EMA codebook、dead-code restart、Optuna 调参、普通 Transformer、学习率调度，以及“严格约束解码”。</p>
+
+<h2>附录 B：实用性分析</h2>
+<p>训练成本方面，CD-GRM 比 SASRec 和 BERT4Rec 更复杂，因为它包含两阶段训练、量化器、图构建、对比学习和 item-level ranker。推理成本方面，CD-GRM 需要 T 步并行去噪和一次 full-sort，当前小规模数据可接受，但大规模工业召回需要 ANN 或候选裁剪。非法 item 风险方面，最终 item-level ranker 保证输出来自合法 item vocabulary，但若直接使用生成 SID，则仍需 valid SID pool 或 Trie 约束。稀疏数据方面，图视图和 graph prior 理论上有助于补充协同信号，但也可能过拟合热门转移。真实系统落地方面，当前方法更适合作为召回候选生成研究原型，而不是直接部署的大规模在线模型。</p>
+
+<h2>附录 C：严格审稿人风险清单与补救建议</h2>
+<ul>
+<li><b>创新是否不足：</b>风险是语义 ID、mask denoising、图对比学习都是已有思想的组合。补救：把主问题收敛为“语义 ID 推荐中的并行去噪与协同增强”，并通过消融证明组合不是简单堆叠。</li>
+<li><b>测试集未超过 SASRec：</b>风险是强 baseline 上没有稳定优势。补救：补充多数据集、多随机种子，并报告统计显著性；如果仍不超过，应把论文定位改为生成式框架分析而非 SOTA 方法。</li>
+<li><b>生成式 baseline 不充分：</b>风险是只比较 SASRec、BERT4Rec、DiffRec，不足以证明生成式推荐贡献。补救：加入 TIGER、P5 或至少语义 ID 自回归 baseline。</li>
+<li><b>item-level ranker 掩盖生成贡献：</b>风险是性能可能主要来自判别式 ranker 和图先验。补救：加入仅 SID denoising、无 item CE、无 graph prior、直接 SID 反查等消融。</li>
+<li><b>graph prior 像后处理技巧：</b>风险是审稿人可能认为 graph prior 是启发式调分。补救：单独报告无 graph prior、仅 graph prior、target-aware prior 与固定 recency prior 的差异。</li>
+<li><b>非法生成分析缺失：</b>风险是论文声称降低非法生成，但没有统计。补救：统计生成 SID 的 valid pool 命中率、碰撞率、非法率，并比较有无 item ranker。</li>
+<li><b>数据集过小：</b>风险是 All_Beauty 仅 86 个 item，结果可能不代表真实生成式推荐。补救：解压并转换 Sports_and_Outdoors、Toys_and_Games，增加更大公开数据集。</li>
+<li><b>效率收益不清楚：</b>风险是 T 步去噪比 SASRec 更慢。补救：报告每用户推理时延、FLOPs、参数量，并测试 diffusion_steps=1/5/10/20 的精度-效率曲线。</li>
+</ul>
+
+<h2>附录 D：待补材料清单</h2>
+<h3>必补</h3>
+<ul>
+<li>至少补充 Sports_and_Outdoors 与 Toys_and_Games 的完整 .inter 数据、训练与测试结果。</li>
+<li>加入生成式语义 ID baseline，例如 TIGER 或自回归 SID 生成 baseline。</li>
+<li>完成核心消融：无图视图 CL、无 graph prior、无 SeqGraphFusionRanker、无 item-level CE、不同 diffusion_steps。</li>
+<li>补充非法 SID 率、SID collision rate、valid SID pool 命中率分析。</li>
+<li>按 3 个以上随机种子报告均值与标准差，避免单次运行偶然性。</li>
+</ul>
+<h3>强烈建议补</h3>
+<ul>
+<li>报告训练时间、推理时间、参数量和显存占用。</li>
+<li>比较 trial 17 与 trial 18 等不同验证 checkpoint 的测试波动。</li>
+<li>做 codebook_size、m_layers、max_degree、graph_window_size 的超参敏感性分析。</li>
+<li>加入 case study，展示图邻域如何影响最终推荐。</li>
+</ul>
+<h3>可选补充</h3>
+<ul>
+<li>可视化 item 语义 ID 聚类或 t-SNE embedding。</li>
+<li>加入 cold-start 或长尾 item 分组评测。</li>
+<li>尝试 ANN 检索替代 full-sort，评估工业召回可扩展性。</li>
+</ul>
+
+<h2>参考文献草稿</h2>
+<div class="ref">
+<p>[1] Kang, W.-C. and McAuley, J. Self-Attentive Sequential Recommendation. ICDM 2018. https://arxiv.org/abs/1808.09781</p>
+<p>[2] Sun, F. et al. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Representations from Transformer. CIKM 2019. https://arxiv.org/abs/1904.06690</p>
+<p>[3] Wang, W. et al. Diffusion Recommender Model. SIGIR 2023. https://arxiv.org/abs/2304.04971</p>
+<p>[4] Rajput, S. et al. Recommender Systems with Generative Retrieval. NeurIPS 2023. https://arxiv.org/abs/2305.05065</p>
+<p>[5] Geng, S. et al. Recommendation as Language Processing (P5). RecSys 2022. https://arxiv.org/abs/2203.13366</p>
+<p>[6] He, X. et al. LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation. SIGIR 2020. https://arxiv.org/abs/2002.02126</p>
+<p>[7] Zhao, W. X. et al. RecBole: Towards a Unified, Comprehensive and Efficient Framework for Recommendation Algorithms. CIKM 2021. https://arxiv.org/abs/2011.01731</p>
+</div>
+
+</body>
+</html>
