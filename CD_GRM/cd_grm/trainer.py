@@ -12,7 +12,6 @@ from CD_GRM.cd_grm.metrics.recbole_eval import evaluate_fullsort_recbole
 
 
 class AMPTrainer:
-
     def __init__(self, model: nn.Module, train_dataloader, valid_dataloader=None,
                  learning_rate: float = 1e-3, weight_decay: float = 1e-4,
                  epochs: int = 50, patience: int = 5, device: torch.device = None,

@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-SRC_PATH = ROOT_DIR / "cd_grm" / "data" / "Toys_and_Games_5.json.gz"
-DST_PATH = ROOT_DIR / "dataset" / "Toys_and_Games" / "Toys_and_Games.inter"
+SRC_PATH = ROOT_DIR / "data" / "Sports_and_Outdoors" / "reviews_Sports_and_Outdoors_5.json.gz"
+DST_PATH = ROOT_DIR / "data" / "Sports_and_Outdoors" / "Sports_and_Outdoors.inter"
 
 HEADER = [
     "user_id:token",
@@ -49,12 +49,9 @@ def convert_json_gz_to_inter(src_path: Path, dst_path: Path) -> None:
     skipped_lines = 0
     bad_json_lines = 0
 
-    with gzip.open(src_path, "rt", encoding="utf-8") as fin, open(
-        dst_path, "w", encoding="utf-8", newline=""
-    ) as fout:
-        writer = csv.writer(fout, delimiter="\t", lineterminator="\n")
-        writer.writerow(HEADER)
+    records = []
 
+    with gzip.open(src_path, "rt", encoding="utf-8") as fin:
         for line_no, line in enumerate(fin, start=1):
             total_lines += 1
             line = line.strip()
@@ -75,11 +72,18 @@ def convert_json_gz_to_inter(src_path: Path, dst_path: Path) -> None:
                 skipped_lines += 1
                 continue
 
-            writer.writerow(record)
+            records.append(record)
             written_lines += 1
 
             if line_no % 100000 == 0:
                 print(f"[Progress] processed={line_no}, written={written_lines}, skipped={skipped_lines}")
+
+    records.sort(key=lambda row: (row[0], row[3], row[1]))
+
+    with open(dst_path, "w", encoding="utf-8", newline="") as fout:
+        writer = csv.writer(fout, delimiter="\t", lineterminator="\n")
+        writer.writerow(HEADER)
+        writer.writerows(records)
 
     print("=" * 60)
     print("Conversion finished.")
