@@ -188,10 +188,19 @@ class CD_GRM_Loss_Engine(nn.Module):
         self.cl_loss_fn = cl_loss_fn
         # 对比学习损失函数。
         # 通常输入两个 [B, D] 表示，输出标量损失。
+        self.register_buffer("sid_item_embedding_weight", torch.empty(0), persistent=False)
 
         self._tie_embeddings()
         # 调用 embedding 绑定函数，
         # 让 transformer / seq_ranker 中也共享当前 item_embedding。
+
+    def freeze_sid_item_embedding(self):
+        self.sid_item_embedding_weight = self.item_embedding.weight.detach().clone()
+
+    def _sid_embedding(self, item_ids):
+        if self.sid_item_embedding_weight.numel() > 0:
+            return F.embedding(item_ids, self.sid_item_embedding_weight)
+        return self.item_embedding(item_ids)
 
     def _tie_embeddings(self):
         # 把本类的 item_embedding 绑定给下游模块，确保共享同一套参数。
@@ -615,7 +624,7 @@ class CD_GRM_Loss_Engine(nn.Module):
         device = history_seq.device
         # 当前输入所在设备，如 cuda:0 / cpu。
 
-        e_target = self.item_embedding(target_item)
+        e_target = self._sid_embedding(target_item)
         # 查 target item 的 embedding。
         # target_item: [B]
         # e_target: [B, D]

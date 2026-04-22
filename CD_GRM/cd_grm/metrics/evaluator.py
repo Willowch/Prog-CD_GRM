@@ -109,6 +109,9 @@ class TopKEvaluator(nn.Module):
         活跃率：每层unique的code/256；冲突率：1-不同sid/总物品数
         """
         all_item_sids_cpu = all_item_sids.detach().to("cpu", dtype=torch.int64)#[num_items, m_layer]
+        # 排除 PAD item
+        if all_item_sids_cpu.size(0) > 1:
+            all_item_sids_cpu = all_item_sids_cpu[1:]
         num_items, m_layers = all_item_sids_cpu.shape
 
         metrics = {}
@@ -122,6 +125,7 @@ class TopKEvaluator(nn.Module):
         metrics["Active_Rate_Mean"] = sum(active_rates) / m_layers#float 4层平均利用率
 
         unique_sids = torch.unique(all_item_sids_cpu, dim=0)#不同 SID 序列的数量
+        metrics["Unique_SID_Count"] = len(unique_sids)
         collision_rate = 1.0 - (len(unique_sids) / float(max(1, num_items)))
         metrics["Collision_Rate"] = collision_rate
 

@@ -33,11 +33,39 @@ model_config:
   diffusion_steps: 10
   transformer_layers: 2
   nhead: 4
+
+  use_seq_graph_fusion: true
+  ranker_layers: 2
+  ranker_dropout: 0.2
+
   tau: 0.1
   max_degree: 50
+
   dead_code_warmup_steps: 100
   dead_code_patience: 100
   dead_code_min_usage_ratio: 0.1
+
+  item_loss_weight: 2.0
+  hybrid_semantic_weight: 0.0
+  stage2_aux_loss_weight: 1.0
+  finetune_item_embedding_stage2: true
+  item_embedding_stage2_lr_scale: 0.1
+
+  graph_window_size: 6
+  graph_context_decay: 0.56
+  graph_prior_weight: 2.5
+  use_target_aware_graph_prior: true
+  graph_prior_sim_scale: 2.0
+  graph_prior_recency_strength: 2.25
+  graph_prior_second_hop_weight: 0.12
+  history_repeat_prior_weight: 0.06
+  last_item_prior_weight: 0.08
+
+  commitment_cost: 0.25
+  decay: 0.8
+  eps: 1.0e-5
+  restart_thres: 1.0
+  dropout: 0.2
 
 train_batch_size: 256
 eval_batch_size: 64
@@ -48,3 +76,4 @@ topk: [5, 10, 20]
 
 stage1_epochs: 15
 freeze_rqvae_stage2: true
+auto_select_best_trial: true

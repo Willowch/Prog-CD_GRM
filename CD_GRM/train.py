@@ -54,28 +54,28 @@ def make_objective(base_raw_config: dict, runtime_meta: dict, args):
         mcfg = raw_config["model_config"]
 
         raw_config["train_batch_size"] = trial.suggest_categorical(
-            "train_batch_size", [64, 128]
+            "train_batch_size", [128]
         )
 
         raw_config["learning_rate"] = trial.suggest_float(
-            "learning_rate", 3e-4, 8e-4, log=True
+            "learning_rate",0.0006150745904964907, 0.0006150745904964907
         )
         raw_config["weight_decay"] = trial.suggest_float(
-            "weight_decay", 3e-4, 2e-3, log=True
+            "weight_decay",0.0009340308327072935, 0.0009340308327072935
         )
 
         mcfg["tau"] = trial.suggest_float(
-            "tau", 0.05, 0.12, log=True
+            "tau", 0.057317870293182936, 0.057317870293182936
         )
         mcfg["diffusion_steps"] = trial.suggest_categorical(
-            "diffusion_steps", [5, 10, 20]
+            "diffusion_steps", [20]
         )
         mcfg["max_degree"] = trial.suggest_categorical(
-            "max_degree", [5, 7]
+            "max_degree", [7]
         )
 
         raw_config["stage1_epochs"] = trial.suggest_categorical(
-            "stage1_epochs", [8, 10, 12, 15]
+            "stage1_epochs", [10]
         )
         raw_config["freeze_rqvae_stage2"] = trial.suggest_categorical(
             "freeze_rqvae_stage2", [True]

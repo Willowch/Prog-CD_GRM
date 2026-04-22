@@ -241,7 +241,11 @@ class AMPTrainer:
         if hasattr(self.model, 'engine') and hasattr(self.model.engine, 'item_embedding'):
             self.model.eval()
             with torch.no_grad():
-                all_embs = self.model.engine.item_embedding.weight# 取出全量 item embedding 权重矩阵：[num_item,embd]
+                sid_weight = getattr(self.model.engine, "sid_item_embedding_weight", None)
+                if sid_weight is not None and sid_weight.numel() > 0:
+                    all_embs = sid_weight
+                else:
+                    all_embs = self.model.engine.item_embedding.weight# 取出全量 item embedding 权重矩阵：[num_item,embd]
                 _, all_sids, _ = self.model.engine.quantizer(all_embs)#[num_item,m_layer]
                 codebook_metrics = self.evaluator.evaluate_codebook_health(all_sids)
                 #每层的使用率 平均使用率；冲突率；
@@ -329,6 +333,8 @@ class AMPTrainer:
         #阶段2：
         print("\n" + "-" * 50)
         print(f">>> 阶段2：训练transformer预测层 ({self.epochs} Epochs) <<<")
+        if hasattr(self.model.engine, "freeze_sid_item_embedding"):
+            self.model.engine.freeze_sid_item_embedding()
 
         self._setup_optimizer_and_scheduler(stage=2)
 
